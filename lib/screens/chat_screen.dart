@@ -64,6 +64,24 @@ class _ChatScreenState extends State<ChatScreen> {
                   ?.copyWith(fontWeight: FontWeight.w600),
             ),
             actions: [
+              // MCP toggle — only shown when MCP is configured and tools are loaded.
+              if (p.mcpConfigured)
+                Tooltip(
+                  message: p.mcpActive
+                      ? 'Tools on — tap to disable'
+                      : 'Tools off — tap to enable',
+                  child: IconButton(
+                    icon: Icon(
+                      p.mcpActive
+                          ? Icons.extension_rounded
+                          : Icons.extension_off_rounded,
+                      color: p.mcpActive
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                    ),
+                    onPressed: p.toggleMcp,
+                  ),
+                ),
               // Network indicator — only shown when an away URL is configured.
               if (p.settings.baseUrlAway.isNotEmpty)
                 Tooltip(

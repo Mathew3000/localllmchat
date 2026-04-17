@@ -39,6 +39,8 @@ class AppProvider extends ChangeNotifier {
   McpService? _mcpService;
   List<McpToolDef> _mcpTools = [];
   bool _fetchingMcpTools = false;
+  // Runtime override — lets the user toggle tools on/off without touching settings.
+  bool _mcpActive = true;
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
@@ -55,7 +57,16 @@ class AppProvider extends ChangeNotifier {
   bool get usingAwayUrl => _usingAway;
   List<McpToolDef> get mcpTools => _mcpTools;
   bool get fetchingMcpTools => _fetchingMcpTools;
-  bool get mcpAvailable => _settings.mcpEnabled && _mcpTools.isNotEmpty;
+  bool get mcpActive => _mcpActive;
+  /// True when MCP is configured, tools are loaded, AND the user hasn't toggled it off.
+  bool get mcpAvailable => _settings.mcpEnabled && _mcpTools.isNotEmpty && _mcpActive;
+  /// Whether MCP is configured at all (ignoring the runtime toggle).
+  bool get mcpConfigured => _settings.mcpEnabled && _mcpTools.isNotEmpty;
+
+  void toggleMcp() {
+    _mcpActive = !_mcpActive;
+    notifyListeners();
+  }
 
   String get activeBaseUrl =>
       (_usingAway && _settings.baseUrlAway.isNotEmpty)
