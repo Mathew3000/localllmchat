@@ -1,0 +1,6 @@
+# Copy this file to local.properties and fill in your Flutter SDK path.
+# Example on Windows:
+# flutter.sdk=C:\\Users\\YourName\\flutter
+# flutter.versionCode=1
+# flutter.versionName=1.0.0
+# sdk.dir=C:\\Users\\YourName\\AppData\\Local\\Android\\sdk

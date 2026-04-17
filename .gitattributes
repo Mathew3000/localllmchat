@@ -1,0 +1,12 @@
+# Normalise line endings to LF in the repo; Windows checkouts stay as-is.
+* text=auto
+
+# Shell scripts must be LF even on Windows
+*.sh text eol=lf
+gradlew text eol=lf
+
+# Binary files — no line-ending conversion
+*.png binary
+*.jpg binary
+*.jar binary
+*.keystore binary
