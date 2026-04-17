@@ -162,6 +162,21 @@ class _MessageList extends StatelessWidget {
         if (conv == null || conv.messages.isEmpty) {
           return _EmptyState(activeUrl: p.activeBaseUrl);
         }
+
+        // Auto-scroll to bottom when new content arrives, but only if the
+        // user is already within 80 px of the bottom (i.e. hasn't scrolled up).
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!scrollController.hasClients) return;
+          final pos = scrollController.position;
+          if (pos.maxScrollExtent - pos.pixels < 80) {
+            scrollController.animateTo(
+              pos.maxScrollExtent,
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+            );
+          }
+        });
+
         // Fallback chain: per-chat override → global default → theme default (null)
         final userColor = conv.userBubbleColor != null
             ? Color(conv.userBubbleColor!)

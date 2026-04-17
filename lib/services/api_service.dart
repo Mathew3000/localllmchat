@@ -23,13 +23,21 @@ class ApiService {
     return url;
   }
 
-  List<Map<String, dynamic>> _buildMessages(List<Message> history) {
+  List<Map<String, dynamic>> _buildMessages(
+    List<Message> history, {
+    bool toolsEnabled = false,
+  }) {
     final messages = <Map<String, dynamic>>[];
     if (settings.systemPrompt.isNotEmpty) {
       messages.add({'role': 'system', 'content': settings.systemPrompt});
     }
     messages.addAll(
-      history.where((m) => m.role != Role.system).map((m) => m.toJson()),
+      history
+          .where((m) => m.role != Role.system)
+          // When not using tools, strip tool-call and tool-result messages —
+          // sending them to a plain chat endpoint confuses most backends.
+          .where((m) => toolsEnabled || (!m.isToolResult && !m.hasToolCalls))
+          .map((m) => m.toJson()),
     );
     return messages;
   }
@@ -52,7 +60,7 @@ class ApiService {
     final uri = Uri.parse('$_baseUrl/chat/completions');
     final body = jsonEncode({
       'model': settings.selectedModel,
-      'messages': _buildMessages(history),
+      'messages': _buildMessages(history, toolsEnabled: false),
       'stream': true,
       'temperature': settings.temperature,
       'max_tokens': settings.maxTokens,
@@ -97,7 +105,7 @@ class ApiService {
     final uri = Uri.parse('$_baseUrl/chat/completions');
     final body = jsonEncode({
       'model': settings.selectedModel,
-      'messages': _buildMessages(history),
+      'messages': _buildMessages(history, toolsEnabled: true),
       'stream': false,
       'temperature': settings.temperature,
       'max_tokens': settings.maxTokens,
