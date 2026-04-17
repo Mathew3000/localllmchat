@@ -62,8 +62,9 @@ class ApiService {
       ..headers.addAll(_headers)
       ..body = body;
 
-    final streamedResponse =
-        await request.send().timeout(const Duration(seconds: 30));
+    final streamedResponse = await request
+        .send()
+        .timeout(Duration(seconds: settings.requestTimeoutSeconds));
 
     if (streamedResponse.statusCode != 200) {
       final errorBody = await streamedResponse.stream.bytesToString();
@@ -106,7 +107,7 @@ class ApiService {
 
     final response = await http
         .post(uri, headers: _headers, body: body)
-        .timeout(const Duration(minutes: 5));
+        .timeout(Duration(seconds: settings.requestTimeoutSeconds));
 
     if (response.statusCode != 200) {
       throw Exception(

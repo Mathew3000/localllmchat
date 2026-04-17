@@ -22,6 +22,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _apiKeyVisible = false;
   late TextEditingController _mcpUrlController;
   bool _mcpEnabled = false;
+  late int _requestTimeoutSeconds;
   int? _globalBgColor;
   int? _defaultUserBubbleColor;
   int? _defaultAssistantBubbleColor;
@@ -39,6 +40,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _selectedModel = s.selectedModel.isEmpty ? null : s.selectedModel;
     _mcpUrlController = TextEditingController(text: s.mcpBaseUrl);
     _mcpEnabled = s.mcpEnabled;
+    _requestTimeoutSeconds = s.requestTimeoutSeconds;
     _globalBgColor = s.backgroundColor;
     _defaultUserBubbleColor = s.defaultUserBubbleColor;
     _defaultAssistantBubbleColor = s.defaultAssistantBubbleColor;
@@ -72,6 +74,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         defaultAssistantBubbleColor: _defaultAssistantBubbleColor,
         mcpBaseUrl: _mcpUrlController.text.trim(),
         mcpEnabled: _mcpEnabled,
+        requestTimeoutSeconds: _requestTimeoutSeconds,
       ),
     );
     if (mounted) {
@@ -256,6 +259,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _MaxTokensField(
                 value: _maxTokens,
                 onChanged: (v) => setState(() => _maxTokens = v),
+              ),
+              const Divider(height: 1),
+              _TimeoutField(
+                value: _requestTimeoutSeconds,
+                onChanged: (v) => setState(() => _requestTimeoutSeconds = v),
               ),
             ],
           ),
@@ -1022,6 +1030,127 @@ class _MaxTokensFieldState extends State<_MaxTokensField> {
                   style: theme.textTheme.labelSmall
                       ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Request timeout: editable seconds field ───────────────────────────────────
+
+class _TimeoutField extends StatefulWidget {
+  final int value;
+  final ValueChanged<int> onChanged;
+
+  const _TimeoutField({required this.value, required this.onChanged});
+
+  @override
+  State<_TimeoutField> createState() => _TimeoutFieldState();
+}
+
+class _TimeoutFieldState extends State<_TimeoutField> {
+  static const int _min = 10;
+  static const int _max = 3600; // 1 hour
+
+  late final TextEditingController _textController;
+
+  @override
+  void initState() {
+    super.initState();
+    _textController = TextEditingController(text: widget.value.toString());
+  }
+
+  @override
+  void didUpdateWidget(_TimeoutField old) {
+    super.didUpdateWidget(old);
+    if (old.value != widget.value) {
+      final cursor = _textController.selection;
+      _textController.text = widget.value.toString();
+      _textController.selection = cursor;
+    }
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  void _apply(String raw) {
+    final parsed = int.tryParse(raw.trim());
+    if (parsed == null) return;
+    widget.onChanged(parsed.clamp(_min, _max));
+  }
+
+  String _label(int s) {
+    if (s < 60) return '${s}s';
+    final m = s ~/ 60;
+    final rem = s % 60;
+    return rem == 0 ? '${m}m' : '${m}m ${rem}s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text('Request Timeout',
+                    style: theme.textTheme.bodyMedium),
+              ),
+              SizedBox(
+                width: 90,
+                child: TextField(
+                  controller: _textController,
+                  keyboardType: TextInputType.number,
+                  textAlign: TextAlign.right,
+                  style: theme.textTheme.bodyMedium,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6)),
+                    suffix: Text(' s',
+                        style: TextStyle(
+                            fontSize: 11, color: cs.onSurfaceVariant)),
+                  ),
+                  onChanged: _apply,
+                  onSubmitted: _apply,
+                  onTapOutside: (_) => _apply(_textController.text),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          // Quick-pick chips
+          Wrap(
+            spacing: 6,
+            children: [30, 60, 120, 300, 600, 1800].map((s) {
+              final selected = widget.value == s;
+              return ChoiceChip(
+                label: Text(_label(s)),
+                selected: selected,
+                onSelected: (_) => widget.onChanged(s),
+                labelStyle: theme.textTheme.labelSmall?.copyWith(
+                  color: selected ? cs.onSecondaryContainer : cs.onSurfaceVariant,
+                ),
+                visualDensity: VisualDensity.compact,
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '${_min}s – ${_label(_max)} • affects streaming connect + tool calls',
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: cs.onSurfaceVariant),
           ),
         ],
       ),

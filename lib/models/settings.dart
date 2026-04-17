@@ -20,6 +20,9 @@ class AppSettings {
   final int? defaultUserBubbleColor;
   /// Default ARGB colour for assistant message bubbles. Null = theme default.
   final int? defaultAssistantBubbleColor;
+  /// LLM request timeout in seconds. Applies to both streaming connect and
+  /// non-streaming tool-call requests. Default 300 s (5 min).
+  final int requestTimeoutSeconds;
 
   const AppSettings({
     this.baseUrlHome = 'http://192.168.1.1:5000/v1',
@@ -37,6 +40,7 @@ class AppSettings {
     this.defaultAssistantBubbleColor,
     this.mcpBaseUrl = '',
     this.mcpEnabled = false,
+    this.requestTimeoutSeconds = 300,
   });
 
   /// The URL that is currently active based on [useAwayUrl].
@@ -61,6 +65,7 @@ class AppSettings {
     Object? defaultAssistantBubbleColor = _unset,
     String? mcpBaseUrl,
     bool? mcpEnabled,
+    int? requestTimeoutSeconds,
   }) =>
       AppSettings(
         baseUrlHome: baseUrlHome ?? this.baseUrlHome,
@@ -84,6 +89,8 @@ class AppSettings {
                 : defaultAssistantBubbleColor as int?,
         mcpBaseUrl: mcpBaseUrl ?? this.mcpBaseUrl,
         mcpEnabled: mcpEnabled ?? this.mcpEnabled,
+        requestTimeoutSeconds:
+            requestTimeoutSeconds ?? this.requestTimeoutSeconds,
       );
 
   Map<String, dynamic> toJson() => {
@@ -101,6 +108,7 @@ class AppSettings {
         'defaultAssistantBubbleColor': defaultAssistantBubbleColor,
         'mcpBaseUrl': mcpBaseUrl,
         'mcpEnabled': mcpEnabled,
+        'requestTimeoutSeconds': requestTimeoutSeconds,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -123,5 +131,7 @@ class AppSettings {
             json['defaultAssistantBubbleColor'] as int?,
         mcpBaseUrl: json['mcpBaseUrl'] as String? ?? '',
         mcpEnabled: json['mcpEnabled'] as bool? ?? false,
+        requestTimeoutSeconds:
+            json['requestTimeoutSeconds'] as int? ?? 300,
       );
 }
