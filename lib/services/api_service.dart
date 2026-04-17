@@ -55,36 +55,39 @@ class ApiService {
     return list.map((m) => m['id'] as String).toList();
   }
 
-  /// Streams chat completions (no tools). Yields delta text chunks.
-  Stream<String> streamChat(List<Message> history) async* {
+  // ── Helpers shared by both streaming methods ─────────────────────────────
+
+  Future<http.StreamedResponse> _openStream(String body) async {
     final uri = Uri.parse('$_baseUrl/chat/completions');
-    final body = jsonEncode({
+    final request = http.Request('POST', uri)
+      ..headers.addAll(_headers)
+      ..body = body;
+    final resp = await request
+        .send()
+        .timeout(Duration(seconds: settings.requestTimeoutSeconds));
+    if (resp.statusCode != 200) {
+      final err = await resp.stream.bytesToString();
+      throw Exception('API error ${resp.statusCode}: $err');
+    }
+    return resp;
+  }
+
+  Stream<String> _lines(http.StreamedResponse resp) =>
+      resp.stream.transform(utf8.decoder).transform(const LineSplitter());
+
+  // ── Plain streaming (no tools) ────────────────────────────────────────────
+
+  /// Streams chat completions without tools. Yields delta text chunks.
+  Stream<String> streamChat(List<Message> history) async* {
+    final resp = await _openStream(jsonEncode({
       'model': settings.selectedModel,
       'messages': _buildMessages(history, toolsEnabled: false),
       'stream': true,
       'temperature': settings.temperature,
       'max_tokens': settings.maxTokens,
-    });
+    }));
 
-    final request = http.Request('POST', uri)
-      ..headers.addAll(_headers)
-      ..body = body;
-
-    final streamedResponse = await request
-        .send()
-        .timeout(Duration(seconds: settings.requestTimeoutSeconds));
-
-    if (streamedResponse.statusCode != 200) {
-      final errorBody = await streamedResponse.stream.bytesToString();
-      throw Exception(
-          'API error ${streamedResponse.statusCode}: $errorBody');
-    }
-
-    final lineStream = streamedResponse.stream
-        .transform(utf8.decoder)
-        .transform(const LineSplitter());
-
-    await for (final line in lineStream) {
+    await for (final line in _lines(resp)) {
       if (!line.startsWith('data: ')) continue;
       final data = line.substring(6).trim();
       if (data == '[DONE]') break;
@@ -99,56 +102,102 @@ class ApiService {
     }
   }
 
-  /// Non-streaming call with tools. Returns either tool calls or final text.
-  Future<LlmResponse> chatWithTools(
-      List<Message> history, List<McpToolDef> tools) async {
-    final uri = Uri.parse('$_baseUrl/chat/completions');
-    final body = jsonEncode({
+  // ── Streaming with tool detection ─────────────────────────────────────────
+
+  /// Streams chat completions when tools are enabled.
+  ///
+  /// Text tokens are yielded for live rendering. [onComplete] is called
+  /// exactly once — after the stream ends — with the full [LlmResponse]
+  /// (either the streamed text content, or accumulated tool calls).
+  Stream<String> streamChatWithTools(
+    List<Message> history,
+    List<McpToolDef> tools,
+    void Function(LlmResponse) onComplete,
+  ) async* {
+    final resp = await _openStream(jsonEncode({
       'model': settings.selectedModel,
       'messages': _buildMessages(history, toolsEnabled: true),
-      'stream': false,
+      'stream': true,
       'temperature': settings.temperature,
       'max_tokens': settings.maxTokens,
       'tools': tools.map((t) => t.toOpenAiTool()).toList(),
       'tool_choice': 'auto',
-    });
+    }));
 
-    final response = await http
-        .post(uri, headers: _headers, body: body)
-        .timeout(Duration(seconds: settings.requestTimeoutSeconds));
+    final contentBuf = StringBuffer();
+    final Map<int, _ToolCallBuilder> builders = {};
+    String? finishReason;
 
-    if (response.statusCode != 200) {
-      throw Exception(
-          'API error ${response.statusCode}: ${response.body}');
-    }
+    await for (final line in _lines(resp)) {
+      if (!line.startsWith('data: ')) continue;
+      final data = line.substring(6).trim();
+      if (data == '[DONE]') break;
+      try {
+        final json = jsonDecode(data) as Map<String, dynamic>;
+        final choices = json['choices'] as List<dynamic>;
+        if (choices.isEmpty) continue;
 
-    final json = jsonDecode(response.body) as Map<String, dynamic>;
-    final choice =
-        (json['choices'] as List<dynamic>)[0] as Map<String, dynamic>;
-    final message = choice['message'] as Map<String, dynamic>;
-    final finishReason = choice['finish_reason'] as String?;
+        final choice = choices[0] as Map<String, dynamic>;
+        finishReason = choice['finish_reason'] as String? ?? finishReason;
+        final delta = choice['delta'] as Map<String, dynamic>?;
+        if (delta == null) continue;
 
-    final rawCalls = message['tool_calls'] as List<dynamic>?;
-    if (finishReason == 'tool_calls' ||
-        (rawCalls != null && rawCalls.isNotEmpty)) {
-      final toolCalls = rawCalls!.map((c) {
-        final func = c['function'] as Map<String, dynamic>;
-        Map<String, dynamic> args;
-        try {
-          args = jsonDecode(func['arguments'] as String)
-              as Map<String, dynamic>;
-        } catch (_) {
-          args = {};
+        // Text content — yield for live display
+        final content = delta['content'] as String?;
+        if (content != null && content.isNotEmpty) {
+          contentBuf.write(content);
+          yield content;
         }
-        return ToolCall(
-          id: c['id'] as String,
-          name: func['name'] as String,
-          arguments: args,
-        );
-      }).toList();
-      return LlmResponse(toolCalls: toolCalls);
+
+        // Tool-call deltas — accumulate incrementally
+        final rawCalls = delta['tool_calls'] as List<dynamic>?;
+        if (rawCalls != null) {
+          for (final raw in rawCalls) {
+            final c = raw as Map<String, dynamic>;
+            final idx = c['index'] as int;
+            builders.putIfAbsent(idx, _ToolCallBuilder.new);
+            builders[idx]!.update(c);
+          }
+        }
+      } catch (_) {}
     }
 
-    return LlmResponse(content: message['content'] as String? ?? '');
+    // Deliver the complete response via callback (runs before stream closes).
+    if (builders.isNotEmpty &&
+        (finishReason == 'tool_calls' || contentBuf.isEmpty)) {
+      final sorted = builders.entries.toList()
+        ..sort((a, b) => a.key.compareTo(b.key));
+      onComplete(
+          LlmResponse(toolCalls: sorted.map((e) => e.value.build()).toList()));
+    } else {
+      onComplete(LlmResponse(content: contentBuf.toString()));
+    }
+  }
+}
+
+// ── Private helper: accumulates incremental tool-call deltas ─────────────────
+
+class _ToolCallBuilder {
+  String id = '';
+  String name = '';
+  final StringBuffer _args = StringBuffer();
+
+  void update(Map<String, dynamic> delta) {
+    if (delta['id'] != null) id = delta['id'] as String;
+    final func = delta['function'] as Map<String, dynamic>?;
+    if (func != null) {
+      if (func['name'] != null) name += func['name'] as String;
+      if (func['arguments'] != null) _args.write(func['arguments'] as String);
+    }
+  }
+
+  ToolCall build() {
+    Map<String, dynamic> args;
+    try {
+      args = jsonDecode(_args.toString()) as Map<String, dynamic>;
+    } catch (_) {
+      args = {};
+    }
+    return ToolCall(id: id, name: name, arguments: args);
   }
 }

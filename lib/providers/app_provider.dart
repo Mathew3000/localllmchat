@@ -411,41 +411,59 @@ class AppProvider extends ChangeNotifier {
     }
   }
 
-  // ── Agentic loop (with MCP tools) ─────────────────────────────────────────
+  // ── Agentic loop (with MCP tools, fully streaming) ───────────────────────
 
   Future<void> _runAgenticLoop() async {
     final mcp = _mcp();
     final api = ApiService(_settings, activeBaseUrl);
     const maxIterations = 10;
 
-    // Temporary typing-indicator placeholder shown while waiting for the LLM.
-    final loadingMsg = Message(
-        role: Role.assistant, content: '', isStreaming: true);
-    _activeConversation!.messages.add(loadingMsg);
-    _activeConversation!.updatedAt = DateTime.now();
-    notifyListeners();
+    // Tracks whichever streaming message is currently visible — needed so
+    // catch / finally can clean it up if something goes wrong.
+    Message? activeMsg;
 
     try {
       for (int i = 0; i < maxIterations; i++) {
-        // Build history excluding the loading placeholder.
+        // Build history excluding the current streaming placeholder.
         final history = _activeConversation!.messages
-            .where((m) => m.id != loadingMsg.id)
+            .where((m) => activeMsg == null || m.id != activeMsg.id)
             .toList();
 
-        final response =
-            await api.chatWithTools(history, _mcpTools);
+        // Fresh streaming placeholder for this round (shows typing indicator).
+        activeMsg =
+            Message(role: Role.assistant, content: '', isStreaming: true);
+        _activeConversation!.messages.add(activeMsg);
+        _activeConversation!.updatedAt = DateTime.now();
+        notifyListeners();
 
-        if (response.hasToolCalls) {
-          // Replace the loading indicator with the tool-call message.
-          _activeConversation!.messages.remove(loadingMsg);
+        // Stream the LLM response; collect tool-call data via callback.
+        LlmResponse? response;
+        await for (final chunk in api.streamChatWithTools(
+          history,
+          _mcpTools,
+          (r) => response = r,
+        )) {
+          activeMsg.content += chunk;
+          notifyListeners();
+        }
+
+        // Bind to a non-nullable local so flow-analysis works after the check.
+        final resp = response;
+        if (resp == null) break; // safety — stream ended without result
+
+        if (resp.hasToolCalls) {
+          // The model called tools. Remove the (empty) streaming placeholder
+          // and replace it with a proper tool-call card.
+          _activeConversation!.messages.remove(activeMsg);
+          activeMsg = null;
           _activeConversation!.messages.add(Message(
             role: Role.assistant,
-            toolCalls: response.toolCalls,
+            toolCalls: resp.toolCalls,
           ));
           notifyListeners();
 
-          // Execute each tool via MCP and add the result message.
-          for (final call in response.toolCalls!) {
+          // Execute each tool via MCP and append the result.
+          for (final call in resp.toolCalls!) {
             List<McpContent> content;
             try {
               content = await mcp.callTool(call.name, call.arguments);
@@ -461,30 +479,29 @@ class AppProvider extends ChangeNotifier {
             ));
             notifyListeners();
           }
-
-          // Re-add the loading indicator for the next LLM round.
-          _activeConversation!.messages.add(loadingMsg);
-          notifyListeners();
+          // activeMsg is null → next iteration creates a fresh placeholder.
         } else {
-          // Final text — replace loading indicator with the real response.
-          _activeConversation!.messages.remove(loadingMsg);
-          _activeConversation!.messages.add(Message(
-            role: Role.assistant,
-            content: response.content ?? '',
-          ));
+          // Text response — already streamed token-by-token. Finalise it.
+          activeMsg.isStreaming = false;
+          activeMsg = null;
           notifyListeners();
           break;
         }
       }
     } catch (e) {
-      _activeConversation!.messages.remove(loadingMsg);
+      if (activeMsg != null) {
+        _activeConversation!.messages.remove(activeMsg);
+        activeMsg = null;
+      }
       _error = e.toString();
       _activeConversation!.messages.add(
         Message(role: Role.assistant, content: '[Error: $e]'),
       );
     } finally {
-      // Safety: ensure the loading placeholder is gone.
-      _activeConversation!.messages.remove(loadingMsg);
+      // Safety net: remove streaming placeholder if still in the list.
+      if (activeMsg != null) {
+        _activeConversation!.messages.remove(activeMsg);
+      }
       _isStreaming = false;
       StreamingKeepAlive.stop();
       _persistConversations();
