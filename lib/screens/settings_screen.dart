@@ -109,7 +109,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.fromLTRB(
+          16, 16, 16,
+          16 + MediaQuery.viewPaddingOf(context).bottom,
+        ),
         children: [
           const _SectionHeader(title: 'Connection'),
           _SettingsCard(
@@ -322,7 +325,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Privacy'),
           const _SecretChatsCard(),
-          const SizedBox(height: 32),
+          const SizedBox(height: 48),
           Center(
             child: Text(
               'LocalLLMChat $kAppVersion',
@@ -334,7 +337,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
         ],
       ),
     );
