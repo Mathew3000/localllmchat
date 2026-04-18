@@ -4,6 +4,7 @@ import '../models/settings.dart';
 import '../providers/app_provider.dart';
 import '../version.dart';
 import '../widgets/color_picker.dart';
+import 'mcp_servers_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -21,8 +22,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late int _maxTokens;
   String? _selectedModel;
   bool _apiKeyVisible = false;
-  late TextEditingController _mcpUrlController;
-  bool _mcpEnabled = false;
   late int _requestTimeoutSeconds;
   int? _globalBgColor;
   int? _defaultUserBubbleColor;
@@ -39,8 +38,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _temperature = s.temperature;
     _maxTokens = s.maxTokens;
     _selectedModel = s.selectedModel.isEmpty ? null : s.selectedModel;
-    _mcpUrlController = TextEditingController(text: s.mcpBaseUrl);
-    _mcpEnabled = s.mcpEnabled;
     _requestTimeoutSeconds = s.requestTimeoutSeconds;
     _globalBgColor = s.backgroundColor;
     _defaultUserBubbleColor = s.defaultUserBubbleColor;
@@ -52,7 +49,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _baseUrlHomeController.dispose();
     _baseUrlAwayController.dispose();
     _apiKeyController.dispose();
-    _mcpUrlController.dispose();
     _systemPromptController.dispose();
     super.dispose();
   }
@@ -73,9 +69,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         backgroundColor: _globalBgColor,
         defaultUserBubbleColor: _defaultUserBubbleColor,
         defaultAssistantBubbleColor: _defaultAssistantBubbleColor,
-        mcpBaseUrl: _mcpUrlController.text.trim(),
-        mcpEnabled: _mcpEnabled,
         requestTimeoutSeconds: _requestTimeoutSeconds,
+        mcpServers: provider.settings.mcpServers,
       ),
     );
     if (mounted) {
@@ -291,11 +286,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 16),
           const _SectionHeader(title: 'MCP Tools'),
-          _McpCard(
-            urlController: _mcpUrlController,
-            enabled: _mcpEnabled,
-            onEnabledChanged: (v) => setState(() => _mcpEnabled = v),
-          ),
+          const _McpNavTile(),
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Appearance'),
           _SettingsCard(
@@ -1174,18 +1165,10 @@ class _TimeoutFieldState extends State<_TimeoutField> {
   }
 }
 
-// ── MCP tools settings card ───────────────────────────────────────────────────
+// ── MCP nav tile — navigates to the dedicated McpServersScreen ────────────────
 
-class _McpCard extends StatelessWidget {
-  final TextEditingController urlController;
-  final bool enabled;
-  final ValueChanged<bool> onEnabledChanged;
-
-  const _McpCard({
-    required this.urlController,
-    required this.enabled,
-    required this.onEnabledChanged,
-  });
+class _McpNavTile extends StatelessWidget {
+  const _McpNavTile();
 
   @override
   Widget build(BuildContext context) {
@@ -1194,101 +1177,44 @@ class _McpCard extends StatelessWidget {
 
     return Consumer<AppProvider>(
       builder: (_, provider, __) {
+        final serverCount = provider.settings.mcpServers.length;
         final toolCount = provider.mcpTools.length;
-        final fetching = provider.fetchingMcpTools;
-        final hasError = provider.error?.startsWith('MCP:') == true;
+        final loading = provider.fetchingMcpTools;
+
+        String subtitle;
+        if (serverCount == 0) {
+          subtitle = 'No servers configured';
+        } else if (loading) {
+          subtitle = '$serverCount server${serverCount == 1 ? '' : 's'} · loading tools…';
+        } else {
+          subtitle =
+              '$serverCount server${serverCount == 1 ? '' : 's'} · $toolCount tool${toolCount == 1 ? '' : 's'} loaded';
+        }
 
         return Card(
           margin: EdgeInsets.zero,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Enable toggle row
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: Row(
-                  children: [
-                    Icon(Icons.extension_outlined,
-                        size: 20, color: cs.onSurfaceVariant),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text('Enable MCP tools',
-                          style: theme.textTheme.bodyMedium),
+          child: ListTile(
+            leading: Icon(
+              Icons.extension_outlined,
+              color: toolCount > 0 ? cs.primary : cs.onSurfaceVariant,
+            ),
+            title: const Text('MCP Servers'),
+            subtitle: Text(subtitle),
+            trailing: loading
+                ? SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: cs.primary,
                     ),
-                    Switch(value: enabled, onChanged: onEnabledChanged),
-                  ],
-                ),
-              ),
-              const Divider(height: 1),
-              // URL field
-              _LabeledField(
-                label: 'MCP Server URL',
-                child: TextField(
-                  controller: urlController,
-                  enabled: enabled,
-                  keyboardType: TextInputType.url,
-                  decoration: const InputDecoration(
-                    hintText: 'http://192.168.1.x:4242',
-                    helperText: 'Base URL or full /mcp endpoint',
-                  ),
-                ),
-              ),
-              const Divider(height: 1),
-              // Fetch button + status
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 12, 12),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            fetching
-                                ? 'Fetching tools…'
-                                : toolCount > 0
-                                    ? '$toolCount tool${toolCount == 1 ? '' : 's'} loaded'
-                                    : 'No tools loaded',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: toolCount > 0 && !fetching
-                                  ? cs.primary
-                                  : cs.onSurfaceVariant,
-                            ),
-                          ),
-                          if (hasError)
-                            Text(
-                              provider.error!,
-                              style: theme.textTheme.bodySmall
-                                  ?.copyWith(color: cs.error),
-                            ),
-                        ],
-                      ),
-                    ),
-                    FilledButton.tonalIcon(
-                      onPressed: fetching || !enabled
-                          ? null
-                          : () {
-                              provider.updateSettings(
-                                provider.settings.copyWith(
-                                  mcpBaseUrl: urlController.text.trim(),
-                                  mcpEnabled: enabled,
-                                ),
-                              );
-                              provider.fetchMcpTools();
-                            },
-                      icon: fetching
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.refresh_rounded),
-                      label: Text(fetching ? 'Loading…' : 'Fetch tools'),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+                  )
+                : const Icon(Icons.chevron_right_rounded),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => const McpServersScreen()),
+            ),
           ),
         );
       },

@@ -1,3 +1,5 @@
+import 'mcp_server.dart';
+
 class AppSettings {
   final String baseUrlHome;
   final String baseUrlAway;
@@ -12,17 +14,14 @@ class AppSettings {
   final String secretPasswordHash;
   /// ARGB colour value for the chat background. Null = theme default.
   final int? backgroundColor;
-  /// MCP server base URL (e.g. http://192.168.1.x:4242). Empty = disabled.
-  final String mcpBaseUrl;
-  /// Whether to include MCP tools in LLM requests.
-  final bool mcpEnabled;
   /// Default ARGB colour for user message bubbles. Null = theme default.
   final int? defaultUserBubbleColor;
   /// Default ARGB colour for assistant message bubbles. Null = theme default.
   final int? defaultAssistantBubbleColor;
-  /// LLM request timeout in seconds. Applies to both streaming connect and
-  /// non-streaming tool-call requests. Default 300 s (5 min).
+  /// LLM request timeout in seconds. Default 300 s (5 min).
   final int requestTimeoutSeconds;
+  /// All configured MCP servers.
+  final List<McpServer> mcpServers;
 
   const AppSettings({
     this.baseUrlHome = 'http://192.168.1.1:5000/v1',
@@ -38,14 +37,16 @@ class AppSettings {
     this.backgroundColor,
     this.defaultUserBubbleColor,
     this.defaultAssistantBubbleColor,
-    this.mcpBaseUrl = '',
-    this.mcpEnabled = false,
     this.requestTimeoutSeconds = 300,
+    this.mcpServers = const [],
   });
 
   /// The URL that is currently active based on [useAwayUrl].
   String get activeBaseUrl =>
       (useAwayUrl && baseUrlAway.isNotEmpty) ? baseUrlAway : baseUrlHome;
+
+  /// True when at least one server is enabled.
+  bool get mcpEnabled => mcpServers.any((s) => s.enabled);
 
   // Sentinel used so copyWith can distinguish "set to null" from "not provided".
   static const Object _unset = Object();
@@ -63,9 +64,8 @@ class AppSettings {
     Object? backgroundColor = _unset,
     Object? defaultUserBubbleColor = _unset,
     Object? defaultAssistantBubbleColor = _unset,
-    String? mcpBaseUrl,
-    bool? mcpEnabled,
     int? requestTimeoutSeconds,
+    List<McpServer>? mcpServers,
   }) =>
       AppSettings(
         baseUrlHome: baseUrlHome ?? this.baseUrlHome,
@@ -87,10 +87,9 @@ class AppSettings {
             identical(defaultAssistantBubbleColor, _unset)
                 ? this.defaultAssistantBubbleColor
                 : defaultAssistantBubbleColor as int?,
-        mcpBaseUrl: mcpBaseUrl ?? this.mcpBaseUrl,
-        mcpEnabled: mcpEnabled ?? this.mcpEnabled,
         requestTimeoutSeconds:
             requestTimeoutSeconds ?? this.requestTimeoutSeconds,
+        mcpServers: mcpServers ?? this.mcpServers,
       );
 
   Map<String, dynamic> toJson() => {
@@ -106,32 +105,46 @@ class AppSettings {
         'backgroundColor': backgroundColor,
         'defaultUserBubbleColor': defaultUserBubbleColor,
         'defaultAssistantBubbleColor': defaultAssistantBubbleColor,
-        'mcpBaseUrl': mcpBaseUrl,
-        'mcpEnabled': mcpEnabled,
         'requestTimeoutSeconds': requestTimeoutSeconds,
+        'mcpServers': mcpServers.map((s) => s.toJson()).toList(),
       };
 
-  factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
-        // Migrate old 'baseUrl' key → baseUrlHome
-        baseUrlHome: json['baseUrlHome'] as String? ??
-            json['baseUrl'] as String? ??
-            'http://192.168.1.1:5000/v1',
-        baseUrlAway: json['baseUrlAway'] as String? ?? '',
-        useAwayUrl: json['useAwayUrl'] as bool? ?? false,
-        apiKey: json['apiKey'] as String? ?? '',
-        selectedModel: json['selectedModel'] as String? ?? '',
-        systemPrompt: json['systemPrompt'] as String? ??
-            'You are a helpful, harmless, and honest AI assistant.',
-        temperature: (json['temperature'] as num?)?.toDouble() ?? 0.7,
-        maxTokens: json['maxTokens'] as int? ?? 2048,
-        secretPasswordHash: json['secretPasswordHash'] as String? ?? '',
-        backgroundColor: json['backgroundColor'] as int?,
-        defaultUserBubbleColor: json['defaultUserBubbleColor'] as int?,
-        defaultAssistantBubbleColor:
-            json['defaultAssistantBubbleColor'] as int?,
-        mcpBaseUrl: json['mcpBaseUrl'] as String? ?? '',
-        mcpEnabled: json['mcpEnabled'] as bool? ?? false,
-        requestTimeoutSeconds:
-            json['requestTimeoutSeconds'] as int? ?? 300,
-      );
+  factory AppSettings.fromJson(Map<String, dynamic> json) {
+    // ── Migrate old single-server config ────────────────────────────────────
+    List<McpServer> mcpServers;
+    if (json['mcpServers'] != null) {
+      mcpServers = (json['mcpServers'] as List<dynamic>)
+          .map((e) => McpServer.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } else {
+      final oldUrl = json['mcpBaseUrl'] as String? ?? '';
+      final oldEnabled = json['mcpEnabled'] as bool? ?? false;
+      mcpServers = (oldUrl.isNotEmpty && oldEnabled)
+          ? [McpServer(name: 'MCP Server', baseUrlHome: oldUrl)]
+          : [];
+    }
+
+    return AppSettings(
+      // Migrate old 'baseUrl' key → baseUrlHome
+      baseUrlHome: json['baseUrlHome'] as String? ??
+          json['baseUrl'] as String? ??
+          'http://192.168.1.1:5000/v1',
+      baseUrlAway: json['baseUrlAway'] as String? ?? '',
+      useAwayUrl: json['useAwayUrl'] as bool? ?? false,
+      apiKey: json['apiKey'] as String? ?? '',
+      selectedModel: json['selectedModel'] as String? ?? '',
+      systemPrompt: json['systemPrompt'] as String? ??
+          'You are a helpful, harmless, and honest AI assistant.',
+      temperature: (json['temperature'] as num?)?.toDouble() ?? 0.7,
+      maxTokens: json['maxTokens'] as int? ?? 2048,
+      secretPasswordHash: json['secretPasswordHash'] as String? ?? '',
+      backgroundColor: json['backgroundColor'] as int?,
+      defaultUserBubbleColor: json['defaultUserBubbleColor'] as int?,
+      defaultAssistantBubbleColor:
+          json['defaultAssistantBubbleColor'] as int?,
+      requestTimeoutSeconds:
+          json['requestTimeoutSeconds'] as int? ?? 300,
+      mcpServers: mcpServers,
+    );
+  }
 }

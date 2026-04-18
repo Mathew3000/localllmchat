@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/conversation.dart';
+import '../models/mcp_server.dart';
 import '../models/message.dart';
 import '../models/settings.dart';
 import '../models/tool_call.dart';
@@ -27,19 +28,28 @@ class AppProvider extends ChangeNotifier {
 
   bool _secretsUnlocked = false;
 
-  // ── Network auto-detection ────────────────────────────────────────────────
+  // ── Network auto-detection (LLM server) ──────────────────────────────────
 
   bool _usingAway = false;
   DateTime? _lastNetworkCheck;
   static const _networkCacheDuration = Duration(seconds: 60);
 
-  // ── MCP ───────────────────────────────────────────────────────────────────
+  // ── MCP (multi-server) ────────────────────────────────────────────────────
 
-  // Single long-lived instance so the MCP session ID is preserved.
-  McpService? _mcpService;
-  List<McpToolDef> _mcpTools = [];
-  bool _fetchingMcpTools = false;
-  // Runtime override — lets the user toggle tools on/off without touching settings.
+  /// Cached McpService instances, keyed by server id.
+  final Map<String, McpService> _mcpServiceCache = {};
+  /// Tools loaded per server id.
+  final Map<String, List<McpToolDef>> _mcpToolsByServer = {};
+  /// In-progress fetch flag per server id.
+  final Map<String, bool> _fetchingByServer = {};
+  /// Last error per server id.
+  final Map<String, String> _mcpErrorByServer = {};
+  /// Whether the away URL is currently active for a given server id.
+  final Map<String, bool> _serverUsingAway = {};
+  /// Routes a tool name to the McpService that provides it.
+  final Map<String, McpService> _toolServiceMap = {};
+
+  /// Runtime override — lets the user toggle tools on/off without touching settings.
   bool _mcpActive = true;
 
   // ── Getters ───────────────────────────────────────────────────────────────
@@ -55,13 +65,34 @@ class AppProvider extends ChangeNotifier {
   bool get secretsUnlocked => _secretsUnlocked;
   bool get hasSecretPassword => _settings.secretPasswordHash.isNotEmpty;
   bool get usingAwayUrl => _usingAway;
-  List<McpToolDef> get mcpTools => _mcpTools;
-  bool get fetchingMcpTools => _fetchingMcpTools;
   bool get mcpActive => _mcpActive;
-  /// True when MCP is configured, tools are loaded, AND the user hasn't toggled it off.
-  bool get mcpAvailable => _settings.mcpEnabled && _mcpTools.isNotEmpty && _mcpActive;
-  /// Whether MCP is configured at all (ignoring the runtime toggle).
-  bool get mcpConfigured => _settings.mcpEnabled && _mcpTools.isNotEmpty;
+
+  /// Flat list of all tools from all enabled servers.
+  List<McpToolDef> get mcpTools =>
+      _mcpToolsByServer.values.expand((l) => l).toList();
+
+  /// True when any server is still loading tools.
+  bool get fetchingMcpTools => _fetchingByServer.values.any((v) => v);
+
+  /// True when MCP is configured, tools loaded, AND runtime toggle is on.
+  bool get mcpAvailable =>
+      _settings.mcpEnabled && mcpTools.isNotEmpty && _mcpActive;
+
+  /// True when MCP is configured at all (ignoring runtime toggle).
+  bool get mcpConfigured => _settings.mcpEnabled && mcpTools.isNotEmpty;
+
+  // ── Per-server state for the MCP servers screen ───────────────────────────
+
+  List<McpToolDef> mcpToolsForServer(String serverId) =>
+      _mcpToolsByServer[serverId] ?? [];
+
+  bool fetchingForServer(String serverId) =>
+      _fetchingByServer[serverId] ?? false;
+
+  String? errorForServer(String serverId) => _mcpErrorByServer[serverId];
+
+  bool serverUsingAway(String serverId) =>
+      _serverUsingAway[serverId] ?? false;
 
   void toggleMcp() {
     _mcpActive = !_mcpActive;
@@ -91,12 +122,10 @@ class AppProvider extends ChangeNotifier {
     }
     notifyListeners();
     _autoDetectUrl();
-    if (_settings.mcpEnabled && _settings.mcpBaseUrl.isNotEmpty) {
-      fetchMcpTools();
-    }
+    _fetchAllMcpTools();
   }
 
-  // ── Network auto-detect ───────────────────────────────────────────────────
+  // ── Network auto-detect (LLM server) ─────────────────────────────────────
 
   Future<void> _autoDetectUrl() async {
     if (_settings.baseUrlAway.isEmpty) {
@@ -147,35 +176,118 @@ class AppProvider extends ChangeNotifier {
     await _autoDetectUrl();
   }
 
-  // ── MCP tools ─────────────────────────────────────────────────────────────
+  // ── MCP: per-server ping & URL selection ──────────────────────────────────
 
-  /// Returns the shared [McpService], creating it if the URL changed.
-  McpService _mcp() {
-    final url = _settings.mcpBaseUrl;
-    if (_mcpService == null || _mcpService!.baseUrl != url) {
-      _mcpService = McpService(url);
+  Future<bool> _pingMcpServer(McpServer server) async {
+    try {
+      var url = server.baseUrlHome.trimRight();
+      if (url.endsWith('/')) url = url.substring(0, url.length - 1);
+      if (!url.endsWith('/mcp')) url = '$url/mcp';
+      await http
+          .get(Uri.parse(url),
+              headers: {'Accept': 'application/json, text/event-stream'})
+          .timeout(const Duration(milliseconds: 1500));
+      return true;
+    } on TimeoutException {
+      return false;
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('unreachable') ||
+          msg.contains('no route') ||
+          msg.contains('network is down') ||
+          msg.contains('failed host lookup')) {
+        return false;
+      }
+      return true;
     }
-    return _mcpService!;
   }
 
-  Future<void> fetchMcpTools() async {
-    if (!_settings.mcpEnabled || _settings.mcpBaseUrl.isEmpty) {
-      _mcpTools = [];
+  McpService _mcpServiceForServer(McpServer server, String activeUrl) {
+    final cached = _mcpServiceCache[server.id];
+    if (cached == null || cached.baseUrl != activeUrl) {
+      _mcpServiceCache[server.id] = McpService(activeUrl);
+    }
+    return _mcpServiceCache[server.id]!;
+  }
+
+  void _rebuildToolServiceMap() {
+    _toolServiceMap.clear();
+    for (final entry in _mcpToolsByServer.entries) {
+      final service = _mcpServiceCache[entry.key];
+      if (service != null) {
+        for (final tool in entry.value) {
+          _toolServiceMap[tool.name] = service;
+        }
+      }
+    }
+  }
+
+  // ── MCP: public fetch API ─────────────────────────────────────────────────
+
+  /// Fetches (or re-fetches) tools for a single server.
+  Future<void> fetchMcpToolsForServer(McpServer server) async {
+    if (!server.enabled || server.baseUrlHome.isEmpty) {
+      _mcpToolsByServer.remove(server.id);
+      _mcpErrorByServer.remove(server.id);
+      _rebuildToolServiceMap();
       notifyListeners();
       return;
     }
-    _fetchingMcpTools = true;
-    _error = null;
+
+    _fetchingByServer[server.id] = true;
+    _mcpErrorByServer.remove(server.id);
     notifyListeners();
+
     try {
-      _mcpTools = await _mcp().listTools();
+      // Auto-detect home vs away for this server.
+      String activeUrl = server.baseUrlHome;
+      if (server.baseUrlAway.isNotEmpty) {
+        final reachable = await _pingMcpServer(server);
+        _serverUsingAway[server.id] = !reachable;
+        if (!reachable) activeUrl = server.baseUrlAway;
+      } else {
+        _serverUsingAway.remove(server.id);
+      }
+
+      final service = _mcpServiceForServer(server, activeUrl);
+      _mcpToolsByServer[server.id] = await service.listTools();
+      _rebuildToolServiceMap();
     } catch (e) {
-      _mcpTools = [];
-      _error = 'MCP: $e';
+      _mcpToolsByServer.remove(server.id);
+      _mcpErrorByServer[server.id] = e.toString();
+      _rebuildToolServiceMap();
     } finally {
-      _fetchingMcpTools = false;
+      _fetchingByServer[server.id] = false;
       notifyListeners();
     }
+  }
+
+  /// Fetches tools for all currently enabled servers (in parallel).
+  Future<void> fetchMcpTools() => _fetchAllMcpTools();
+
+  Future<void> _fetchAllMcpTools() async {
+    final enabled = _settings.mcpServers
+        .where((s) => s.enabled && s.baseUrlHome.isNotEmpty)
+        .toList();
+    if (enabled.isEmpty) return;
+    await Future.wait(enabled.map(fetchMcpToolsForServer));
+  }
+
+  /// Persists an updated server list without re-fetching tools.
+  /// Called by McpServersScreen whenever the user edits server config.
+  Future<void> saveMcpServers(List<McpServer> servers) async {
+    _settings = _settings.copyWith(mcpServers: servers);
+    await _storage.saveSettings(_settings);
+
+    // Clean up stale entries for removed servers.
+    final ids = servers.map((s) => s.id).toSet();
+    _mcpServiceCache.removeWhere((k, _) => !ids.contains(k));
+    _mcpToolsByServer.removeWhere((k, _) => !ids.contains(k));
+    _fetchingByServer.removeWhere((k, _) => !ids.contains(k));
+    _mcpErrorByServer.removeWhere((k, _) => !ids.contains(k));
+    _serverUsingAway.removeWhere((k, _) => !ids.contains(k));
+    _rebuildToolServiceMap();
+    notifyListeners();
   }
 
   // ── Secret chats ──────────────────────────────────────────────────────────
@@ -266,12 +378,6 @@ class AppProvider extends ChangeNotifier {
     _availableModels = [];
     _lastNetworkCheck = null;
     notifyListeners();
-    if (_settings.mcpEnabled && _settings.mcpBaseUrl.isNotEmpty) {
-      fetchMcpTools();
-    } else {
-      _mcpTools = [];
-      notifyListeners();
-    }
   }
 
   Future<void> fetchModels() async {
@@ -414,46 +520,37 @@ class AppProvider extends ChangeNotifier {
   // ── Agentic loop (with MCP tools, fully streaming) ───────────────────────
 
   Future<void> _runAgenticLoop() async {
-    final mcp = _mcp();
     final api = ApiService(_settings, activeBaseUrl);
     const maxIterations = 10;
 
-    // Tracks whichever streaming message is currently visible — needed so
-    // catch / finally can clean it up if something goes wrong.
     Message? activeMsg;
 
     try {
       for (int i = 0; i < maxIterations; i++) {
-        // Build history excluding the current streaming placeholder.
         final history = _activeConversation!.messages
             .where((m) => activeMsg == null || m.id != activeMsg.id)
             .toList();
 
-        // Fresh streaming placeholder for this round (shows typing indicator).
         activeMsg =
             Message(role: Role.assistant, content: '', isStreaming: true);
         _activeConversation!.messages.add(activeMsg);
         _activeConversation!.updatedAt = DateTime.now();
         notifyListeners();
 
-        // Stream the LLM response; collect tool-call data via callback.
         LlmResponse? response;
         await for (final chunk in api.streamChatWithTools(
           history,
-          _mcpTools,
+          mcpTools,
           (r) => response = r,
         )) {
           activeMsg.content += chunk;
           notifyListeners();
         }
 
-        // Bind to a non-nullable local so flow-analysis works after the check.
         final resp = response;
-        if (resp == null) break; // safety — stream ended without result
+        if (resp == null) break;
 
         if (resp.hasToolCalls) {
-          // The model called tools. Remove the (empty) streaming placeholder
-          // and replace it with a proper tool-call card.
           _activeConversation!.messages.remove(activeMsg);
           activeMsg = null;
           _activeConversation!.messages.add(Message(
@@ -462,11 +559,21 @@ class AppProvider extends ChangeNotifier {
           ));
           notifyListeners();
 
-          // Execute each tool via MCP and append the result.
           for (final call in resp.toolCalls!) {
             List<McpContent> content;
             try {
-              content = await mcp.callTool(call.name, call.arguments);
+              // Route the call to whichever server provides this tool.
+              final service = _toolServiceMap[call.name];
+              if (service == null) {
+                content = [
+                  McpContent(
+                    type: 'text',
+                    text: 'Tool error: unknown tool "${call.name}"',
+                  )
+                ];
+              } else {
+                content = await service.callTool(call.name, call.arguments);
+              }
             } catch (e) {
               content = [McpContent(type: 'text', text: 'Tool error: $e')];
             }
@@ -479,9 +586,7 @@ class AppProvider extends ChangeNotifier {
             ));
             notifyListeners();
           }
-          // activeMsg is null → next iteration creates a fresh placeholder.
         } else {
-          // Text response — already streamed token-by-token. Finalise it.
           activeMsg.isStreaming = false;
           activeMsg = null;
           notifyListeners();
@@ -498,7 +603,6 @@ class AppProvider extends ChangeNotifier {
         Message(role: Role.assistant, content: '[Error: $e]'),
       );
     } finally {
-      // Safety net: remove streaming placeholder if still in the list.
       if (activeMsg != null) {
         _activeConversation!.messages.remove(activeMsg);
       }
