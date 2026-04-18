@@ -78,6 +78,10 @@ class ApiService {
   // ── Plain streaming (no tools) ────────────────────────────────────────────
 
   /// Streams chat completions without tools. Yields delta text chunks.
+  ///
+  /// Handles thinking models (e.g. Qwen3): `reasoning_content` deltas are
+  /// wrapped in `<think>…</think>` so the bubble widget renders them as a
+  /// collapsible thinking block.
   Stream<String> streamChat(List<Message> history) async* {
     final resp = await _openStream(jsonEncode({
       'model': settings.selectedModel,
@@ -86,6 +90,9 @@ class ApiService {
       'temperature': settings.temperature,
       'max_tokens': settings.maxTokens,
     }));
+
+    bool inThinking = false;
+    bool thinkingClosed = false;
 
     await for (final line in _lines(resp)) {
       if (!line.startsWith('data: ')) continue;
@@ -96,8 +103,25 @@ class ApiService {
         final choices = json['choices'] as List<dynamic>;
         if (choices.isEmpty) continue;
         final delta = choices[0]['delta'] as Map<String, dynamic>?;
-        final content = delta?['content'] as String?;
-        if (content != null && content.isNotEmpty) yield content;
+        if (delta == null) continue;
+
+        final reasoning = delta['reasoning_content'] as String?;
+        final content = delta['content'] as String?;
+
+        if (reasoning != null && reasoning.isNotEmpty) {
+          if (!inThinking) {
+            yield '<think>';
+            inThinking = true;
+          }
+          yield reasoning;
+        }
+        if (content != null && content.isNotEmpty) {
+          if (inThinking && !thinkingClosed) {
+            yield '</think>';
+            thinkingClosed = true;
+          }
+          yield content;
+        }
       } catch (_) {}
     }
   }
@@ -163,7 +187,11 @@ class ApiService {
                 );
               }).toList();
             } else {
-              text = message['content'] as String? ?? '';
+              final reasoning = message['reasoning_content'] as String?;
+              final body = message['content'] as String? ?? '';
+              text = (reasoning != null && reasoning.isNotEmpty)
+                  ? '<think>$reasoning</think>$body'
+                  : body;
               if (text.isNotEmpty) yield text;
             }
           }
@@ -176,9 +204,11 @@ class ApiService {
     }
 
     // ── SSE path ─────────────────────────────────────────────────────────────
-    final contentBuf = StringBuffer();
+    final contentBuf = StringBuffer(); // actual response text (not thinking)
     final Map<int, _ToolCallBuilder> builders = {};
     String? finishReason;
+    bool inThinking = false;
+    bool thinkingClosed = false;
 
     await for (final line in _lines(resp)) {
       if (!line.startsWith('data: ')) continue;
@@ -194,9 +224,23 @@ class ApiService {
         final delta = choice['delta'] as Map<String, dynamic>?;
         if (delta == null) continue;
 
-        // Text content — yield for live display
+        // Thinking tokens (Qwen3 / reasoning models) — wrap in <think> tags
+        final reasoning = delta['reasoning_content'] as String?;
+        if (reasoning != null && reasoning.isNotEmpty) {
+          if (!inThinking) {
+            yield '<think>';
+            inThinking = true;
+          }
+          yield reasoning;
+        }
+
+        // Actual response content — close any open think block first
         final content = delta['content'] as String?;
         if (content != null && content.isNotEmpty) {
+          if (inThinking && !thinkingClosed) {
+            yield '</think>';
+            thinkingClosed = true;
+          }
           contentBuf.write(content);
           yield content;
         }
@@ -215,6 +259,8 @@ class ApiService {
     }
 
     // Deliver the complete response via callback (runs before stream closes).
+    // Use contentBuf (actual text only) to decide tool-call vs text response —
+    // reasoning tokens alone must not prevent tool-call detection.
     if (builders.isNotEmpty &&
         (finishReason == 'tool_calls' || contentBuf.isEmpty)) {
       final sorted = builders.entries.toList()
