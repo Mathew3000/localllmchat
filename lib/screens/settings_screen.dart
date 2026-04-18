@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/settings.dart';
 import '../providers/app_provider.dart';
+import '../version.dart';
 import '../widgets/color_picker.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -322,6 +323,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const _SectionHeader(title: 'Privacy'),
           const _SecretChatsCard(),
           const SizedBox(height: 32),
+          Center(
+            child: Text(
+              'LocalLLMChat $kAppVersion',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurfaceVariant
+                        .withValues(alpha: 0.55),
+                  ),
+            ),
+          ),
+          const SizedBox(height: 24),
         ],
       ),
     );

@@ -109,6 +109,9 @@ class ApiService {
   /// Text tokens are yielded for live rendering. [onComplete] is called
   /// exactly once — after the stream ends — with the full [LlmResponse]
   /// (either the streamed text content, or accumulated tool calls).
+  ///
+  /// Falls back to plain-JSON parsing if the server ignores `stream:true`
+  /// when `tools` is present (common with llama.cpp / some backends).
   Stream<String> streamChatWithTools(
     List<Message> history,
     List<McpToolDef> tools,
@@ -124,6 +127,55 @@ class ApiService {
       'tool_choice': 'auto',
     }));
 
+    // ── JSON fallback ────────────────────────────────────────────────────────
+    // Some backends (llama.cpp, text-generation-webui, …) return a plain JSON
+    // chat-completion object instead of SSE when `tools` is in the request,
+    // even though we asked for `stream: true`.  Detect via Content-Type and
+    // parse the whole body at once so the UI still gets a usable response.
+    final contentType = resp.headers['content-type'] ?? '';
+    if (!contentType.contains('event-stream')) {
+      final body = await resp.stream.bytesToString();
+      String text = '';
+      List<ToolCall>? toolCalls;
+      try {
+        final json = jsonDecode(body) as Map<String, dynamic>;
+        final choices = json['choices'] as List<dynamic>;
+        if (choices.isNotEmpty) {
+          final message = (choices[0] as Map<String, dynamic>)['message']
+              as Map<String, dynamic>?;
+          if (message != null) {
+            final rawCalls = message['tool_calls'] as List<dynamic>?;
+            if (rawCalls != null && rawCalls.isNotEmpty) {
+              toolCalls = rawCalls.map((raw) {
+                final c = raw as Map<String, dynamic>;
+                final func = c['function'] as Map<String, dynamic>;
+                Map<String, dynamic> args;
+                try {
+                  args = jsonDecode(func['arguments'] as String)
+                      as Map<String, dynamic>;
+                } catch (_) {
+                  args = {};
+                }
+                return ToolCall(
+                  id: c['id'] as String? ?? '',
+                  name: func['name'] as String? ?? '',
+                  arguments: args,
+                );
+              }).toList();
+            } else {
+              text = message['content'] as String? ?? '';
+              if (text.isNotEmpty) yield text;
+            }
+          }
+        }
+      } catch (_) {}
+      onComplete(toolCalls != null
+          ? LlmResponse(toolCalls: toolCalls)
+          : LlmResponse(content: text));
+      return;
+    }
+
+    // ── SSE path ─────────────────────────────────────────────────────────────
     final contentBuf = StringBuffer();
     final Map<int, _ToolCallBuilder> builders = {};
     String? finishReason;
