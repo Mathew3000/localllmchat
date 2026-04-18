@@ -4,6 +4,26 @@ import 'package:flutter/material.dart';
 import '../models/message.dart';
 import '../models/tool_call.dart';
 
+// ── Display-name helper ───────────────────────────────────────────────────────
+
+/// Converts a snake_case tool name to a user-friendly label.
+///
+/// Examples:
+///   "web_search_and_read" → "Web search and read"
+///   "get_weather"         → "Get weather"
+///   "code_interpreter"    → "Code interpreter"
+String _toolLabel(String name) {
+  if (name.isEmpty) return 'tool';
+  final words = name.split('_');
+  final first = words.first;
+  final capitalised =
+      first[0].toUpperCase() + first.substring(1).toLowerCase();
+  if (words.length == 1) return capitalised;
+  return '$capitalised ${words.skip(1).join(' ').toLowerCase()}';
+}
+
+// ── Public bubble widget ──────────────────────────────────────────────────────
+
 /// Renders an assistant tool-call message or a tool-result message.
 class ToolBubble extends StatelessWidget {
   final Message message;
@@ -26,7 +46,7 @@ class ToolBubble extends StatelessWidget {
   }
 }
 
-// ── Tool-call card ────────────────────────────────────────────────────────────
+// ── Tool-call card ("Performing …") ──────────────────────────────────────────
 
 class _ToolCallCard extends StatefulWidget {
   final ToolCall call;
@@ -46,8 +66,8 @@ class _ToolCallCardState extends State<_ToolCallCard> {
 
     String argPreview;
     try {
-      argPreview = const JsonEncoder.withIndent('  ')
-          .convert(widget.call.arguments);
+      argPreview =
+          const JsonEncoder.withIndent('  ').convert(widget.call.arguments);
     } catch (_) {
       argPreview = widget.call.arguments.toString();
     }
@@ -58,34 +78,35 @@ class _ToolCallCardState extends State<_ToolCallCard> {
         decoration: BoxDecoration(
           color: cs.secondaryContainer.withValues(alpha: 0.5),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-              color: cs.secondary.withValues(alpha: 0.3), width: 1),
+          border:
+              Border.all(color: cs.secondary.withValues(alpha: 0.3), width: 1),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Header ──────────────────────────────────────────────────
+            // ── Header ──────────────────────────────────────────────────────
             InkWell(
               borderRadius: const BorderRadius.vertical(
                   top: Radius.circular(12), bottom: Radius.circular(12)),
               onTap: () => setState(() => _expanded = !_expanded),
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: Row(
                   children: [
                     Icon(Icons.build_outlined,
                         size: 15, color: cs.onSecondaryContainer),
                     const SizedBox(width: 6),
-                    Text(
-                      widget.call.name,
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: cs.onSecondaryContainer,
-                        fontWeight: FontWeight.w600,
-                        fontFamily: 'monospace',
+                    Expanded(
+                      child: Text(
+                        'Performing ${_toolLabel(widget.call.name)}',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: cs.onSecondaryContainer,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const Spacer(),
                     Icon(
                       _expanded
                           ? Icons.keyboard_arrow_up_rounded
@@ -97,7 +118,7 @@ class _ToolCallCardState extends State<_ToolCallCard> {
                 ),
               ),
             ),
-            // ── Arguments (expanded) ─────────────────────────────────────
+            // ── Arguments (expanded) ─────────────────────────────────────────
             AnimatedCrossFade(
               duration: const Duration(milliseconds: 200),
               crossFadeState: _expanded
@@ -124,7 +145,7 @@ class _ToolCallCardState extends State<_ToolCallCard> {
   }
 }
 
-// ── Tool-result card ──────────────────────────────────────────────────────────
+// ── Tool-result card ("… result" / "Running …") ───────────────────────────────
 
 class _ToolResultCard extends StatefulWidget {
   final Message message;
@@ -141,9 +162,11 @@ class _ToolResultCardState extends State<_ToolResultCard> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final theme = Theme.of(context);
+    final running = widget.message.isStreaming;
+    final label = _toolLabel(widget.message.toolName ?? '');
     final contents = widget.message.toolContent ?? [];
-    final hasContent =
-        contents.isNotEmpty || widget.message.content.isNotEmpty;
+    final hasContent = !running &&
+        (contents.isNotEmpty || widget.message.content.isNotEmpty);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
@@ -157,7 +180,7 @@ class _ToolResultCardState extends State<_ToolResultCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Header ──────────────────────────────────────────────────
+            // ── Header ──────────────────────────────────────────────────────
             InkWell(
               borderRadius: const BorderRadius.vertical(
                   top: Radius.circular(12), bottom: Radius.circular(12)),
@@ -165,22 +188,36 @@ class _ToolResultCardState extends State<_ToolResultCard> {
                   ? () => setState(() => _expanded = !_expanded)
                   : null,
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: Row(
                   children: [
-                    Icon(Icons.check_circle_outline_rounded,
-                        size: 15, color: cs.primary),
+                    // Spinner while running, checkmark when done
+                    if (running)
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.8,
+                          color: cs.primary,
+                        ),
+                      )
+                    else
+                      Icon(Icons.check_circle_outline_rounded,
+                          size: 15, color: cs.primary),
                     const SizedBox(width: 6),
-                    Text(
-                      widget.message.toolName ?? 'tool result',
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: cs.onSurface,
-                        fontWeight: FontWeight.w600,
-                        fontFamily: 'monospace',
+                    Expanded(
+                      child: Text(
+                        running
+                            ? 'Running $label\u2026'
+                            : '$label result',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: cs.onSurface,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const Spacer(),
                     if (hasContent)
                       Icon(
                         _expanded
@@ -193,7 +230,7 @@ class _ToolResultCardState extends State<_ToolResultCard> {
                 ),
               ),
             ),
-            // ── Content (expanded) ────────────────────────────────────────
+            // ── Content (expanded) ────────────────────────────────────────────
             AnimatedCrossFade(
               duration: const Duration(milliseconds: 200),
               crossFadeState: _expanded
@@ -210,8 +247,8 @@ class _ToolResultCardState extends State<_ToolResultCard> {
                     else
                       SelectableText(
                         widget.message.content,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                            color: cs.onSurfaceVariant),
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: cs.onSurfaceVariant),
                       ),
                   ],
                 ),
@@ -251,7 +288,6 @@ class _ContentItem extends StatelessWidget {
         return const Text('[image]');
       }
     }
-    // Text content
     final text = content.text ?? '';
     if (text.isEmpty) return const SizedBox.shrink();
     return SelectableText(

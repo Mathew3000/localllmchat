@@ -560,31 +560,42 @@ class AppProvider extends ChangeNotifier {
           notifyListeners();
 
           for (final call in resp.toolCalls!) {
-            List<McpContent> content;
-            try {
-              // Route the call to whichever server provides this tool.
-              final service = _toolServiceMap[call.name];
-              if (service == null) {
-                content = [
-                  McpContent(
-                    type: 'text',
-                    text: 'Tool error: unknown tool "${call.name}"',
-                  )
-                ];
-              } else {
-                content = await service.callTool(call.name, call.arguments);
-              }
-            } catch (e) {
-              content = [McpContent(type: 'text', text: 'Tool error: $e')];
-            }
-            _activeConversation!.messages.add(Message(
+            // Add a pending result placeholder immediately so the user
+            // sees the spinner before the tool finishes executing.
+            final resultMsg = Message(
               role: Role.tool,
-              content: content.map((c) => c.toApiText()).join('\n'),
+              content: '',
               toolCallId: call.id,
               toolName: call.name,
-              toolContent: content,
-            ));
-            notifyListeners();
+              isStreaming: true,
+            );
+            _activeConversation!.messages.add(resultMsg);
+            notifyListeners(); // spinner appears now, before the HTTP call
+
+            try {
+              final service = _toolServiceMap[call.name];
+              if (service == null) {
+                resultMsg.content =
+                    'Tool error: unknown tool "${call.name}"';
+                resultMsg.toolContent = [
+                  McpContent(type: 'text', text: resultMsg.content)
+                ];
+              } else {
+                final content =
+                    await service.callTool(call.name, call.arguments);
+                resultMsg.content =
+                    content.map((c) => c.toApiText()).join('\n');
+                resultMsg.toolContent = content;
+              }
+            } catch (e) {
+              resultMsg.content = 'Tool error: $e';
+              resultMsg.toolContent = [
+                McpContent(type: 'text', text: resultMsg.content)
+              ];
+            } finally {
+              resultMsg.isStreaming = false;
+              notifyListeners(); // result fills in
+            }
           }
         } else {
           activeMsg.isStreaming = false;
