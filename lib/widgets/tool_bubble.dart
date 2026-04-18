@@ -165,8 +165,18 @@ class _ToolResultCardState extends State<_ToolResultCard> {
     final running = widget.message.isStreaming;
     final label = _toolLabel(widget.message.toolName ?? '');
     final contents = widget.message.toolContent ?? [];
-    final hasContent = !running &&
-        (contents.isNotEmpty || widget.message.content.isNotEmpty);
+
+    // Split: images are always shown inline; text goes in the collapsible.
+    final imageContents =
+        contents.where((c) => c.type == 'image').toList();
+    final textContents =
+        contents.where((c) => c.type != 'image').toList();
+
+    // Fall back to raw content string when toolContent isn't available.
+    final hasTextContent = !running &&
+        (textContents.isNotEmpty ||
+            (contents.isEmpty && widget.message.content.isNotEmpty));
+    final hasImages = !running && imageContents.isNotEmpty;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
@@ -182,9 +192,12 @@ class _ToolResultCardState extends State<_ToolResultCard> {
           children: [
             // ── Header ──────────────────────────────────────────────────────
             InkWell(
-              borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(12), bottom: Radius.circular(12)),
-              onTap: hasContent
+              borderRadius: BorderRadius.vertical(
+                top: const Radius.circular(12),
+                bottom: Radius.circular(
+                    hasImages || hasTextContent ? 0 : 12),
+              ),
+              onTap: hasTextContent
                   ? () => setState(() => _expanded = !_expanded)
                   : null,
               child: Padding(
@@ -192,7 +205,6 @@ class _ToolResultCardState extends State<_ToolResultCard> {
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: Row(
                   children: [
-                    // Spinner while running, checkmark when done
                     if (running)
                       SizedBox(
                         width: 14,
@@ -208,9 +220,7 @@ class _ToolResultCardState extends State<_ToolResultCard> {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        running
-                            ? 'Running $label\u2026'
-                            : '$label result',
+                        running ? 'Running $label\u2026' : '$label result',
                         style: theme.textTheme.labelMedium?.copyWith(
                           color: cs.onSurface,
                           fontWeight: FontWeight.w600,
@@ -218,7 +228,7 @@ class _ToolResultCardState extends State<_ToolResultCard> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    if (hasContent)
+                    if (hasTextContent)
                       Icon(
                         _expanded
                             ? Icons.keyboard_arrow_up_rounded
@@ -230,30 +240,46 @@ class _ToolResultCardState extends State<_ToolResultCard> {
                 ),
               ),
             ),
-            // ── Content (expanded) ────────────────────────────────────────────
-            AnimatedCrossFade(
-              duration: const Duration(milliseconds: 200),
-              crossFadeState: _expanded
-                  ? CrossFadeState.showSecond
-                  : CrossFadeState.showFirst,
-              firstChild: const SizedBox.shrink(),
-              secondChild: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+
+            // ── Images — always visible ───────────────────────────────────
+            if (hasImages)
+              Padding(
+                padding: EdgeInsets.fromLTRB(
+                    12, 4, 12, hasTextContent ? 4 : 10),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (contents.isNotEmpty)
-                      ...contents.map((c) => _ContentItem(content: c))
-                    else
-                      SelectableText(
-                        widget.message.content,
-                        style: theme.textTheme.bodySmall
-                            ?.copyWith(color: cs.onSurfaceVariant),
-                      ),
-                  ],
+                  children: imageContents
+                      .map((c) => _ContentItem(content: c))
+                      .toList(),
                 ),
               ),
-            ),
+
+            // ── Text content — collapsible ────────────────────────────────
+            if (hasTextContent)
+              AnimatedCrossFade(
+                duration: const Duration(milliseconds: 200),
+                crossFadeState: _expanded
+                    ? CrossFadeState.showSecond
+                    : CrossFadeState.showFirst,
+                firstChild: const SizedBox.shrink(),
+                secondChild: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: textContents.isNotEmpty
+                        ? textContents
+                            .map((c) => _ContentItem(content: c))
+                            .toList()
+                        : [
+                            SelectableText(
+                              widget.message.content,
+                              style: theme.textTheme.bodySmall
+                                  ?.copyWith(color: cs.onSurfaceVariant),
+                            )
+                          ],
+                  ),
+                ),
+              ),
           ],
         ),
       ),

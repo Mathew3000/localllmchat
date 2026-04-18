@@ -37,6 +37,14 @@ class ApiService {
           // When not using tools, strip tool-call and tool-result messages —
           // sending them to a plain chat endpoint confuses most backends.
           .where((m) => toolsEnabled || (!m.isToolResult && !m.hasToolCalls))
+          // Drop thinking-only assistant messages (empty after stripping
+          // <think> blocks) — the model shouldn't see its own reasoning.
+          .where((m) {
+            if (m.role == Role.assistant && !m.hasToolCalls) {
+              return m.contentForApi.isNotEmpty;
+            }
+            return true;
+          })
           .map((m) => m.toJson()),
     );
     return messages;

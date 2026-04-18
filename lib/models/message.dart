@@ -32,6 +32,17 @@ class Message {
   bool get hasToolCalls => toolCalls != null && toolCalls!.isNotEmpty;
   bool get isToolResult => role == Role.tool;
 
+  /// Content with `<think>…</think>` blocks stripped.
+  ///
+  /// Thinking tokens are generated locally for display only; they must not
+  /// be echoed back to the LLM as part of the conversation history.
+  String get contentForApi {
+    return content
+        .replaceAll(RegExp(r'<think>[\s\S]*?</think>'), '')
+        .replaceAll(RegExp(r'<think>[\s\S]*'), '') // unclosed block
+        .trim();
+  }
+
   // ── API serialisation ──────────────────────────────────────────────────────
 
   Map<String, dynamic> toJson() {
@@ -50,7 +61,8 @@ class Message {
         'tool_calls': toolCalls!.map((t) => t.toApiJson()).toList(),
       };
     }
-    return {'role': role.name, 'content': content};
+    // Strip thinking blocks — the model must not see its own reasoning history.
+    return {'role': role.name, 'content': contentForApi};
   }
 
   // ── Storage serialisation ─────────────────────────────────────────────────

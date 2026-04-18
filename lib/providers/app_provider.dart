@@ -551,7 +551,13 @@ class AppProvider extends ChangeNotifier {
         if (resp == null) break;
 
         if (resp.hasToolCalls) {
-          _activeConversation!.messages.remove(activeMsg);
+          // Keep the streaming placeholder if it accumulated thinking content
+          // so the thinking block stays visible in the conversation.
+          if (activeMsg.content.isNotEmpty) {
+            activeMsg.isStreaming = false; // finalise in-place
+          } else {
+            _activeConversation!.messages.remove(activeMsg); // empty — discard
+          }
           activeMsg = null;
           _activeConversation!.messages.add(Message(
             role: Role.assistant,
