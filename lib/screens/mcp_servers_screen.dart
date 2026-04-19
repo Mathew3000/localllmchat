@@ -81,6 +81,8 @@ class _McpServersScreenState extends State<McpServersScreen> {
                     fetching: provider.fetchingForServer(server.id),
                     error: provider.errorForServer(server.id),
                     usingAway: provider.serverUsingAway(server.id),
+                    detectedTransport:
+                        provider.detectedTransportForServer(server.id),
                     onChanged: _updateServer,
                     onDelete: () => _showDeleteConfirm(context, server),
                     onFetch: () => provider.fetchMcpToolsForServer(server),
@@ -165,6 +167,8 @@ class _McpServerCard extends StatefulWidget {
   final bool fetching;
   final String? error;
   final bool usingAway;
+  /// When transport is [McpTransport.auto], shows which protocol was detected.
+  final String? detectedTransport;
   final ValueChanged<McpServer> onChanged;
   final VoidCallback onDelete;
   final VoidCallback onFetch;
@@ -176,6 +180,7 @@ class _McpServerCard extends StatefulWidget {
     required this.fetching,
     required this.error,
     required this.usingAway,
+    this.detectedTransport,
     required this.onChanged,
     required this.onDelete,
     required this.onFetch,
@@ -285,6 +290,65 @@ class _McpServerCardState extends State<_McpServerCard> {
             trailing: widget.usingAway
                 ? _ActiveBadge(label: 'active', cs: cs)
                 : null,
+          ),
+          const Divider(height: 1),
+
+          // ── Transport selector ────────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+            child: Row(
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Transport',
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: cs.onSurfaceVariant),
+                    ),
+                    if (widget.server.transport == McpTransport.auto &&
+                        widget.detectedTransport != null)
+                      Text(
+                        'detected: ${widget.detectedTransport}',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: cs.primary,
+                          fontSize: 10,
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: SegmentedButton<McpTransport>(
+                    segments: const [
+                      ButtonSegment(
+                        value: McpTransport.auto,
+                        label: Text('Auto'),
+                        icon: Icon(Icons.auto_awesome_rounded),
+                      ),
+                      ButtonSegment(
+                        value: McpTransport.streamableHttp,
+                        label: Text('HTTP'),
+                        icon: Icon(Icons.http_rounded),
+                      ),
+                      ButtonSegment(
+                        value: McpTransport.sse,
+                        label: Text('SSE'),
+                        icon: Icon(Icons.stream_rounded),
+                      ),
+                    ],
+                    selected: {widget.server.transport},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (sel) => widget.onChanged(
+                        widget.server.copyWith(transport: sel.first)),
+                    style: const ButtonStyle(
+                      visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
           const Divider(height: 1),
 

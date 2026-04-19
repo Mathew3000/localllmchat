@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/tool_call.dart';
+import 'base_mcp_service.dart';
 
 /// HTTP client for a Local-MCP-server instance (Streamable-HTTP transport).
 ///
@@ -8,7 +9,8 @@ import '../models/tool_call.dart';
 ///   1. POST /mcp  with `initialize`  → server returns Mcp-Session-Id header
 ///   2. POST /mcp  with `notifications/initialized`  (no response body needed)
 ///   3. All subsequent POSTs carry `Mcp-Session-Id: <id>`
-class McpService {
+class McpService extends BaseMcpService {
+  @override
   final String baseUrl;
 
   McpService(this.baseUrl);
@@ -55,7 +57,7 @@ class McpService {
         .timeout(const Duration(seconds: 15));
 
     if (initResp.statusCode != 200) {
-      throw Exception('MCP init ${initResp.statusCode}: ${initResp.body}');
+      throw McpHttpException(initResp.statusCode, initResp.body);
     }
 
     _sessionId = initResp.headers['mcp-session-id'];
@@ -95,15 +97,14 @@ class McpService {
         .timeout(const Duration(seconds: 30));
 
     // Session expired — reset and retry once.
-    if (response.statusCode == 400 &&
-        response.body.contains('session')) {
+    if (response.statusCode == 400 && response.body.contains('session')) {
       _sessionId = null;
       await _ensureSession();
       return _post(body);
     }
 
     if (response.statusCode != 200) {
-      throw Exception('MCP ${response.statusCode}: ${response.body}');
+      throw McpHttpException(response.statusCode, response.body);
     }
 
     // Server may reply with plain JSON or SSE (data: {...}\n\n).
@@ -133,6 +134,7 @@ class McpService {
   // ── Public API ──────────────────────────────────────────────────────────────
 
   /// Returns all tools advertised by the server.
+  @override
   Future<List<McpToolDef>> listTools() async {
     final result = await _post({'method': 'tools/list', 'params': {}});
     final tools = result['tools'] as List<dynamic>;
@@ -142,6 +144,7 @@ class McpService {
   }
 
   /// Calls [name] with [arguments] and returns content items.
+  @override
   Future<List<McpContent>> callTool(
       String name, Map<String, dynamic> arguments) async {
     final result = await _post({
