@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:file_picker/file_picker.dart';
+import '../services/backup_crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/settings.dart';
@@ -316,6 +320,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Privacy'),
           const _SecretChatsCard(),
+          const SizedBox(height: 16),
+          const _SectionHeader(title: 'Backup & Restore'),
+          const _BackupCard(),
           const SizedBox(height: 48),
           Center(
             child: Text(
@@ -1161,6 +1168,364 @@ class _TimeoutFieldState extends State<_TimeoutField> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ── Backup & Restore card ─────────────────────────────────────────────────────
+
+class _BackupCard extends StatelessWidget {
+  const _BackupCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Column(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.upload_outlined),
+            title: const Text('Export backup'),
+            subtitle: const Text('Save all chats & settings to a file'),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => _export(context),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.download_outlined),
+            title: const Text('Import backup'),
+            subtitle: const Text('Restore from a previously exported file'),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => _import(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Export ──────────────────────────────────────────────────────────────────
+
+  Future<void> _export(BuildContext context) async {
+    final provider = context.read<AppProvider>();
+    final plainJson = provider.buildBackupJson();
+
+    // If a secret-chat password is set, require it to encrypt the backup.
+    String outputJson;
+    if (provider.hasSecretPassword) {
+      final password = await showDialog<String>(
+        context: context,
+        builder: (_) => const _PasswordPromptDialog(
+          title: 'Encrypt backup',
+          body:
+              'Enter your secret chat password. The backup will be encrypted '
+              'with AES-256-GCM so secret chats stay private.',
+          actionLabel: 'Encrypt & save',
+        ),
+      );
+      if (password == null || !context.mounted) return; // cancelled
+
+      if (!provider.verifySecretPassword(password)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Wrong password — backup not saved'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      // Derive key + encrypt — show spinner while PBKDF2 runs.
+      outputJson = await _withSpinner(
+        context,
+        'Encrypting…',
+        () => BackupCrypto.encrypt(plainJson, password),
+      );
+      if (!context.mounted) return;
+    } else {
+      outputJson = plainJson;
+    }
+
+    // Write to user-chosen location.
+    final now = DateTime.now();
+    final stamp =
+        '${now.year}${_p(now.month)}${_p(now.day)}_${_p(now.hour)}${_p(now.minute)}${_p(now.second)}';
+    try {
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save LocalLLMChat backup',
+        fileName: 'localllmchat_$stamp.json',
+        bytes: Uint8List.fromList(utf8.encode(outputJson)),
+      );
+      if (!context.mounted) return;
+      if (path != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Backup saved'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Export failed: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  // ── Import ──────────────────────────────────────────────────────────────────
+
+  Future<void> _import(BuildContext context) async {
+    // 1. Pick the file.
+    FilePickerResult? result;
+    try {
+      result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: true,
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not open file picker: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    if (result == null || result.files.isEmpty) return;
+    final bytes = result.files.first.bytes;
+    if (bytes == null) return;
+
+    final rawJson = utf8.decode(bytes);
+
+    // 2. Decrypt if needed.
+    String plainJson;
+    if (BackupCrypto.isEncrypted(rawJson)) {
+      if (!context.mounted) return;
+      final password = await showDialog<String>(
+        context: context,
+        builder: (_) => const _PasswordPromptDialog(
+          title: 'Encrypted backup',
+          body: 'This backup is encrypted. Enter the password that was used '
+              'when the backup was created.',
+          actionLabel: 'Decrypt',
+        ),
+      );
+      if (password == null || !context.mounted) return;
+
+      try {
+        plainJson = await _withSpinner(
+          context,
+          'Decrypting…',
+          () => BackupCrypto.decrypt(rawJson, password),
+        );
+      } on ArgumentError {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Wrong password — could not decrypt backup'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      } catch (e) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Decryption failed: $e'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+      if (!context.mounted) return;
+    } else {
+      plainJson = rawJson;
+    }
+
+    // 3. Validate & count conversations.
+    int convCount;
+    try {
+      final data = jsonDecode(plainJson) as Map<String, dynamic>;
+      convCount = (data['conversations'] as List<dynamic>).length;
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Not a valid LocalLLMChat backup file'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    if (!context.mounted) return;
+
+    // 4. Confirm.
+    final cs = Theme.of(context).colorScheme;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Import backup?'),
+        content: Text(
+          'This will replace all current conversations and settings with '
+          '$convCount conversation${convCount == 1 ? '' : 's'} from the backup.\n\n'
+          'This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: cs.error,
+              foregroundColor: cs.onError,
+            ),
+            child: const Text('Import & overwrite'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    // 5. Apply.
+    final provider = context.read<AppProvider>();
+    final error = await provider.applyBackupJson(plainJson);
+    if (!context.mounted) return;
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error), behavior: SnackBarBehavior.floating),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              '$convCount conversation${convCount == 1 ? '' : 's'} imported'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      Navigator.pop(context);
+    }
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  /// Shows a non-dismissible spinner dialog while [work] runs, then pops it.
+  Future<T> _withSpinner<T>(
+    BuildContext context,
+    String label,
+    Future<T> Function() work,
+  ) async {
+    // Kick off both concurrently; the dialog outlasts the work only when work
+    // is faster than the first frame render — harmless because we pop anyway.
+    T? result;
+    Object? error;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Row(
+            children: [
+              const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2.5)),
+              const SizedBox(width: 16),
+              Text(label),
+            ],
+          ),
+        ),
+      ),
+    );
+    try {
+      result = await work();
+    } catch (e) {
+      error = e;
+    }
+    if (context.mounted) Navigator.pop(context);
+    if (error != null) throw error;
+    return result as T;
+  }
+
+  String _p(int n) => n.toString().padLeft(2, '0');
+}
+
+// ── Password prompt dialog ────────────────────────────────────────────────────
+
+class _PasswordPromptDialog extends StatefulWidget {
+  final String title;
+  final String body;
+  final String actionLabel;
+
+  const _PasswordPromptDialog({
+    required this.title,
+    required this.body,
+    required this.actionLabel,
+  });
+
+  @override
+  State<_PasswordPromptDialog> createState() => _PasswordPromptDialogState();
+}
+
+class _PasswordPromptDialogState extends State<_PasswordPromptDialog> {
+  final _ctrl = TextEditingController();
+  bool _obscure = true;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(widget.body, style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _ctrl,
+            obscureText: _obscure,
+            autofocus: true,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => Navigator.pop(context, _ctrl.text),
+            decoration: InputDecoration(
+              labelText: 'Password',
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                icon: Icon(_obscure
+                    ? Icons.visibility_outlined
+                    : Icons.visibility_off_outlined),
+                onPressed: () => setState(() => _obscure = !_obscure),
+              ),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _ctrl.text),
+          style: FilledButton.styleFrom(backgroundColor: cs.primary),
+          child: Text(widget.actionLabel),
+        ),
+      ],
     );
   }
 }

@@ -9,7 +9,9 @@ import '../models/message.dart';
 import '../models/settings.dart';
 import '../models/tool_call.dart';
 import '../services/api_service.dart';
+import '../services/base_mcp_service.dart';
 import '../services/mcp_service.dart';
+import '../services/mcp_sse_service.dart';
 import '../services/storage_service.dart';
 import '../services/streaming_keep_alive.dart';
 
@@ -36,8 +38,8 @@ class AppProvider extends ChangeNotifier {
 
   // ── MCP (multi-server) ────────────────────────────────────────────────────
 
-  /// Cached McpService instances, keyed by server id.
-  final Map<String, McpService> _mcpServiceCache = {};
+  /// Cached service instances (Streamable-HTTP or SSE), keyed by server id.
+  final Map<String, BaseMcpService> _mcpServiceCache = {};
   /// Tools loaded per server id.
   final Map<String, List<McpToolDef>> _mcpToolsByServer = {};
   /// In-progress fetch flag per server id.
@@ -46,8 +48,8 @@ class AppProvider extends ChangeNotifier {
   final Map<String, String> _mcpErrorByServer = {};
   /// Whether the away URL is currently active for a given server id.
   final Map<String, bool> _serverUsingAway = {};
-  /// Routes a tool name to the McpService that provides it.
-  final Map<String, McpService> _toolServiceMap = {};
+  /// Routes a tool name to the service that provides it.
+  final Map<String, BaseMcpService> _toolServiceMap = {};
 
   /// Runtime override — lets the user toggle tools on/off without touching settings.
   bool _mcpActive = true;
@@ -93,6 +95,14 @@ class AppProvider extends ChangeNotifier {
 
   bool serverUsingAway(String serverId) =>
       _serverUsingAway[serverId] ?? false;
+
+  /// When transport is [McpTransport.auto], returns the transport that was
+  /// actually detected ('SSE' or 'HTTP'). Returns null when not yet connected.
+  String? detectedTransportForServer(String serverId) {
+    final svc = _mcpServiceCache[serverId];
+    if (svc == null) return null;
+    return svc is McpSseService ? 'SSE' : 'HTTP';
+  }
 
   void toggleMcp() {
     _mcpActive = !_mcpActive;
@@ -202,12 +212,63 @@ class AppProvider extends ChangeNotifier {
     }
   }
 
-  McpService _mcpServiceForServer(McpServer server, String activeUrl) {
-    final cached = _mcpServiceCache[server.id];
-    if (cached == null || cached.baseUrl != activeUrl) {
-      _mcpServiceCache[server.id] = McpService(activeUrl);
+  // ── MCP: transport-aware service creation ────────────────────────────────
+
+  /// Returns a cached service if URL and concrete type still match;
+  /// otherwise creates a new one.
+  BaseMcpService _reuseOrCreate(
+      String serverId, String url, McpTransport type) {
+    final cached = _mcpServiceCache[serverId];
+    if (cached != null && cached.baseUrl == url) {
+      if (type == McpTransport.sse && cached is McpSseService) return cached;
+      if (type == McpTransport.streamableHttp && cached is McpService) {
+        return cached;
+      }
     }
-    return _mcpServiceCache[server.id]!;
+    cached?.dispose();
+    return type == McpTransport.sse ? McpSseService(url) : McpService(url);
+  }
+
+  /// For [McpTransport.auto]: tries Streamable-HTTP first; on 404/405 falls
+  /// back to HTTP+SSE.  Reuses a cached service if the URL hasn't changed.
+  Future<(BaseMcpService, List<McpToolDef>)> _autoDetect(
+      String serverId, String url) async {
+    // Reuse whatever worked last time (same URL).
+    final cached = _mcpServiceCache[serverId];
+    if (cached != null && cached.baseUrl == url) {
+      try {
+        return (cached, await cached.listTools());
+      } catch (_) {
+        cached.dispose();
+        _mcpServiceCache.remove(serverId);
+      }
+    }
+
+    // Try Streamable-HTTP.
+    try {
+      final svc = McpService(url);
+      final tools = await svc.listTools();
+      return (svc, tools);
+    } on McpHttpException catch (e) {
+      // 404/405 means the server doesn't have a /mcp endpoint — try SSE.
+      if (e.statusCode != 404 && e.statusCode != 405) rethrow;
+    }
+
+    // Fall back to HTTP+SSE.
+    final svc = McpSseService(url);
+    final tools = await svc.listTools();
+    return (svc, tools);
+  }
+
+  /// Resolves the active URL (home vs away) for [server].
+  Future<String> _selectUrl(McpServer server) async {
+    if (server.baseUrlAway.isEmpty) {
+      _serverUsingAway.remove(server.id);
+      return server.baseUrlHome;
+    }
+    final reachable = await _pingMcpServer(server);
+    _serverUsingAway[server.id] = !reachable;
+    return reachable ? server.baseUrlHome : server.baseUrlAway;
   }
 
   void _rebuildToolServiceMap() {
@@ -227,6 +288,7 @@ class AppProvider extends ChangeNotifier {
   /// Fetches (or re-fetches) tools for a single server.
   Future<void> fetchMcpToolsForServer(McpServer server) async {
     if (!server.enabled || server.baseUrlHome.isEmpty) {
+      _mcpServiceCache.remove(server.id)?.dispose();
       _mcpToolsByServer.remove(server.id);
       _mcpErrorByServer.remove(server.id);
       _rebuildToolServiceMap();
@@ -239,20 +301,27 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Auto-detect home vs away for this server.
-      String activeUrl = server.baseUrlHome;
-      if (server.baseUrlAway.isNotEmpty) {
-        final reachable = await _pingMcpServer(server);
-        _serverUsingAway[server.id] = !reachable;
-        if (!reachable) activeUrl = server.baseUrlAway;
-      } else {
-        _serverUsingAway.remove(server.id);
+      final activeUrl = await _selectUrl(server);
+
+      BaseMcpService service;
+      List<McpToolDef> tools;
+
+      switch (server.transport) {
+        case McpTransport.streamableHttp:
+          service = _reuseOrCreate(server.id, activeUrl, McpTransport.streamableHttp);
+          tools = await service.listTools();
+        case McpTransport.sse:
+          service = _reuseOrCreate(server.id, activeUrl, McpTransport.sse);
+          tools = await service.listTools();
+        case McpTransport.auto:
+          (service, tools) = await _autoDetect(server.id, activeUrl);
       }
 
-      final service = _mcpServiceForServer(server, activeUrl);
-      _mcpToolsByServer[server.id] = await service.listTools();
+      _mcpServiceCache[server.id] = service;
+      _mcpToolsByServer[server.id] = tools;
       _rebuildToolServiceMap();
     } catch (e) {
+      _mcpServiceCache.remove(server.id)?.dispose();
       _mcpToolsByServer.remove(server.id);
       _mcpErrorByServer[server.id] = e.toString();
       _rebuildToolServiceMap();
@@ -276,12 +345,29 @@ class AppProvider extends ChangeNotifier {
   /// Persists an updated server list without re-fetching tools.
   /// Called by McpServersScreen whenever the user edits server config.
   Future<void> saveMcpServers(List<McpServer> servers) async {
+    final oldById = {for (final s in _settings.mcpServers) s.id: s};
     _settings = _settings.copyWith(mcpServers: servers);
     await _storage.saveSettings(_settings);
 
-    // Clean up stale entries for removed servers.
+    // If a server's URL or transport changed, its cached service is stale —
+    // dispose and evict it (and the tool list) so the next fetch starts fresh.
+    for (final s in servers) {
+      final old = oldById[s.id];
+      if (old != null &&
+          (old.baseUrlHome != s.baseUrlHome ||
+              old.baseUrlAway != s.baseUrlAway ||
+              old.transport != s.transport)) {
+        _mcpServiceCache.remove(s.id)?.dispose();
+        _mcpToolsByServer.remove(s.id);
+        _mcpErrorByServer.remove(s.id);
+      }
+    }
+
+    // Clean up entries for removed servers.
     final ids = servers.map((s) => s.id).toSet();
-    _mcpServiceCache.removeWhere((k, _) => !ids.contains(k));
+    for (final id in _mcpServiceCache.keys.toList()) {
+      if (!ids.contains(id)) _mcpServiceCache.remove(id)?.dispose();
+    }
     _mcpToolsByServer.removeWhere((k, _) => !ids.contains(k));
     _fetchingByServer.removeWhere((k, _) => !ids.contains(k));
     _mcpErrorByServer.removeWhere((k, _) => !ids.contains(k));
@@ -294,6 +380,14 @@ class AppProvider extends ChangeNotifier {
 
   static String _hashPassword(String password) =>
       sha256.convert(utf8.encode(password)).toString();
+
+  /// Returns true when [password] matches the stored secret-chat password hash,
+  /// without changing any unlock state.
+  bool verifySecretPassword(String password) {
+    if (_settings.secretPasswordHash.isEmpty) return false;
+    final hash = sha256.convert(utf8.encode(password)).toString();
+    return hash == _settings.secretPasswordHash;
+  }
 
   bool unlockSecrets(String password) {
     if (_hashPassword(password) == _settings.secretPasswordHash) {
@@ -646,4 +740,46 @@ class AppProvider extends ChangeNotifier {
 
   Future<void> _persistConversations() =>
       _storage.saveConversations(_conversations);
+
+  // ── Backup / Restore ──────────────────────────────────────────────────────
+
+  /// Serialises all conversations + settings into a backup JSON string.
+  String buildBackupJson() {
+    return jsonEncode({
+      'version': 1,
+      'exportedAt': DateTime.now().toUtc().toIso8601String(),
+      'conversations': _conversations.map((c) => c.toJson()).toList(),
+      'settings': _settings.toJson(),
+    });
+  }
+
+  /// Replaces all conversations and settings from a backup JSON string.
+  /// Returns `null` on success, or an error description on failure.
+  Future<String?> applyBackupJson(String jsonStr) async {
+    try {
+      final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final version = data['version'] as int? ?? 0;
+      if (version > 1) {
+        return 'Backup format v$version is newer than this app supports.';
+      }
+      final convList = (data['conversations'] as List<dynamic>)
+          .map((j) => Conversation.fromJson(j as Map<String, dynamic>))
+          .toList()
+        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      final settings =
+          AppSettings.fromJson(data['settings'] as Map<String, dynamic>);
+
+      _conversations = convList;
+      _settings = settings;
+      _activeConversation = null;
+      _secretsUnlocked = false;
+
+      await _storage.saveConversations(_conversations);
+      await _storage.saveSettings(_settings);
+      notifyListeners();
+      return null;
+    } catch (e) {
+      return 'Could not parse backup: $e';
+    }
+  }
 }
