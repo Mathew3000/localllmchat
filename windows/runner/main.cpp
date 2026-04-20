@@ -24,10 +24,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
+  // Size the window to 80 % of the primary screen, centred, min 900×600.
+  int screenW = ::GetSystemMetrics(SM_CXSCREEN);
+  int screenH = ::GetSystemMetrics(SM_CYSCREEN);
+  int winW = max(screenW * 4 / 5, 900);
+  int winH = max(screenH * 4 / 5, 600);
+  int originX = (screenW - winW) / 2;
+  int originY = (screenH - winH) / 2;
+
   FlutterWindow window(project);
-  Win32Window::Point origin(10, 10);
-  Win32Window::Size size(1280, 720);
-  if (!window.Create(L"local_llm_chat", origin, size)) {
+  Win32Window::Point origin(originX, originY);
+  Win32Window::Size size(winW, winH);
+  if (!window.Create(L"LocalLLMChat", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
