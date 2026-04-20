@@ -1,5 +1,6 @@
 @echo off
 setlocal
+set PATH=C:\Users\Matthias\Documents\flutter\flutter\bin;%PATH%
 
 echo ================================================
 echo  LocalLLMChat - Windows local build
