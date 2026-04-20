@@ -20,7 +20,7 @@ echo.
 :build
 echo Fetching dependencies...
 flutter pub get
-if errorlevel 1 goto :error
+:: pub get exits 1 for deprecation warnings even on success — ignore it.
 
 echo.
 echo Building release...

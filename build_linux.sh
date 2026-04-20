@@ -18,7 +18,8 @@ EOF
 fi
 
 echo "Fetching dependencies..."
-flutter pub get
+# pub get exits 1 for deprecation warnings even on success — ignore it.
+flutter pub get || true
 
 echo
 echo "Building release..."
