@@ -61,6 +61,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _save() async {
     final provider = context.read<AppProvider>();
     // Preserve secretPasswordHash — it's managed separately via dialogs.
+    // Preserve fields that are managed outside this form.
+    final s = provider.settings;
     await provider.updateSettings(
       AppSettings(
         baseUrlHome: _baseUrlHomeController.text.trim(),
@@ -70,12 +72,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
         systemPrompt: _systemPromptController.text,
         temperature: _temperature,
         maxTokens: _maxTokens,
-        secretPasswordHash: provider.settings.secretPasswordHash,
+        secretPasswordHash: s.secretPasswordHash,
         backgroundColor: _globalBgColor,
         defaultUserBubbleColor: _defaultUserBubbleColor,
         defaultAssistantBubbleColor: _defaultAssistantBubbleColor,
         requestTimeoutSeconds: _requestTimeoutSeconds,
-        mcpServers: provider.settings.mcpServers,
+        mcpServers: s.mcpServers,
+        syncUrl: s.syncUrl,
+        syncUsername: s.syncUsername,
+        syncAccessToken: s.syncAccessToken,
+        syncRefreshToken: s.syncRefreshToken,
+        syncLastAt: s.syncLastAt,
       ),
     );
     if (mounted) {

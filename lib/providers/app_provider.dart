@@ -57,6 +57,8 @@ class AppProvider extends ChangeNotifier {
   final Map<String, String> _mcpErrorByServer = {};
   /// Whether the away URL is currently active for a given server id.
   final Map<String, bool> _serverUsingAway = {};
+  /// Last time the home/away decision was made for each server id.
+  final Map<String, DateTime> _serverLastUrlCheck = {};
   /// Routes a tool name to the service that provides it.
   final Map<String, BaseMcpService> _toolServiceMap = {};
 
@@ -279,13 +281,25 @@ class AppProvider extends ChangeNotifier {
   }
 
   /// Resolves the active URL (home vs away) for [server].
+  ///
+  /// Result is cached for [_networkCacheDuration] (60 s) to avoid
+  /// re-pinging on every tool refresh — mirrors the LLM server behaviour.
   Future<String> _selectUrl(McpServer server) async {
     if (server.baseUrlAway.isEmpty) {
       _serverUsingAway.remove(server.id);
+      _serverLastUrlCheck.remove(server.id);
       return server.baseUrlHome;
+    }
+    final last = _serverLastUrlCheck[server.id];
+    final cacheValid = last != null &&
+        DateTime.now().difference(last) < _networkCacheDuration;
+    if (cacheValid) {
+      final usingAway = _serverUsingAway[server.id] ?? false;
+      return usingAway ? server.baseUrlAway : server.baseUrlHome;
     }
     final reachable = await _pingMcpServer(server);
     _serverUsingAway[server.id] = !reachable;
+    _serverLastUrlCheck[server.id] = DateTime.now();
     return reachable ? server.baseUrlHome : server.baseUrlAway;
   }
 
@@ -378,6 +392,7 @@ class AppProvider extends ChangeNotifier {
         _mcpServiceCache.remove(s.id)?.dispose();
         _mcpToolsByServer.remove(s.id);
         _mcpErrorByServer.remove(s.id);
+        _serverLastUrlCheck.remove(s.id); // force re-ping with new URL
       }
     }
 
@@ -390,6 +405,7 @@ class AppProvider extends ChangeNotifier {
     _fetchingByServer.removeWhere((k, _) => !ids.contains(k));
     _mcpErrorByServer.removeWhere((k, _) => !ids.contains(k));
     _serverUsingAway.removeWhere((k, _) => !ids.contains(k));
+    _serverLastUrlCheck.removeWhere((k, _) => !ids.contains(k));
     _rebuildToolServiceMap();
     notifyListeners();
   }
