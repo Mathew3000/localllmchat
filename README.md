@@ -14,6 +14,7 @@ Primary target is Android; the adaptive layout also runs on Windows and Linux.
 | **MCP tools** | Multiple MCP servers (Streamable-HTTP and HTTP+SSE transports, auto-detected); per-server Home/Away URLs; agentic tool loop with live tool-call and result cards |
 | **Dual URL** | Home URL (local Wi-Fi) + Away URL (WireGuard / Tailscale); auto-detects which is reachable |
 | **Secret chats** | Password-protected conversations hidden until unlocked; SHA-256 hashed PIN |
+| **Sync** | Self-hosted sync server; E2E encrypted (AES-256-GCM, PBKDF2-SHA256); union-merge across devices |
 | **Backup & Restore** | Export all chats + settings to a JSON file; AES-256-GCM encrypted (PBKDF2-SHA256) when a secret-chat password is set |
 | **Appearance** | Per-chat and global background colour, user bubble colour, AI bubble colour |
 | **Generation** | Configurable temperature, max tokens (128 – 262 144), request timeout, system prompt |
@@ -29,10 +30,10 @@ lib/
 │   ├── conversation.dart      – Conversation + message list, colour overrides
 │   ├── mcp_server.dart        – McpServer model (id, URLs, transport, enabled)
 │   ├── message.dart           – Role enum, tool-call fields, contentForApi
-│   ├── settings.dart          – AppSettings (URLs, model, MCP servers, colours, …)
+│   ├── settings.dart          – AppSettings (URLs, model, sync, MCP, colours, …)
 │   └── tool_call.dart         – McpToolDef, ToolCall, McpContent, LlmResponse
 ├── providers/
-│   └── app_provider.dart      – ChangeNotifier; streaming, agentic loop, backup
+│   └── app_provider.dart      – ChangeNotifier; streaming, agentic loop, sync, backup
 ├── services/
 │   ├── api_service.dart       – OpenAI-compatible HTTP client (SSE streaming + tools)
 │   ├── backup_crypto.dart     – AES-256-GCM backup encryption (PBKDF2-SHA256)
@@ -40,16 +41,26 @@ lib/
 │   ├── mcp_service.dart       – MCP Streamable-HTTP transport
 │   ├── mcp_sse_service.dart   – MCP HTTP+SSE transport (legacy servers)
 │   ├── storage_service.dart   – SharedPreferences JSON persistence
-│   └── streaming_keep_alive.dart – Android foreground service during streaming
+│   ├── streaming_keep_alive.dart – Android foreground service during streaming
+│   └── sync_service.dart      – Sync HTTP client, SyncCrypto (AES-GCM, PBKDF2)
 ├── screens/
 │   ├── chat_screen.dart       – Adaptive layout: permanent sidebar ≥720 px, drawer below
 │   ├── mcp_servers_screen.dart– Per-server config (URLs, transport, tool list)
-│   └── settings_screen.dart   – Connection, model, MCP, appearance, privacy, backup
+│   └── settings_screen.dart   – Connection, model, MCP, sync, appearance, privacy, backup
 └── widgets/
     ├── chat_input.dart        – Text field; Enter sends on desktop, Shift+Enter newline
     ├── color_picker.dart      – Colour palette dialog
     ├── message_bubble.dart    – User / assistant bubble with thinking-block support
     └── tool_bubble.dart       – Collapsible tool-call and tool-result cards
+
+sync_server/                   – Self-hosted sync backend (Go + SQLite)
+├── main.go                    – HTTP server, routing, JWT secret init
+├── db.go                      – SQLite schema (WAL, foreign keys)
+├── middleware.go               – JWT Bearer auth middleware
+├── handlers_auth.go           – POST /api/auth/{register,login,refresh}
+├── handlers_sync.go           – GET/PUT/DELETE /api/sync/{state,conversations,settings}
+├── Dockerfile
+└── docker-compose.yml
 ```
 
 ---
@@ -140,6 +151,53 @@ Passwords are stored as a SHA-256 hash — the plaintext never touches disk.
 
 ---
 
+## Sync
+
+Sync keeps chats and settings in step across multiple devices via a self-hosted server. The server stores only encrypted blobs — it never sees plaintext.
+
+### Security model
+
+| Step | What happens |
+|---|---|
+| Register / Login | Client computes `PBKDF2(password, username+":auth:v1", 100 000)` and sends the result. Server `bcrypt`s that — the plaintext password never leaves the device. |
+| Encryption key | Client derives `PBKDF2(password, username+":enc:v1", 100 000)` independently and keeps it **in memory only** — never written to disk or sent to the server. |
+| Blob encryption | Each conversation and the settings object are encrypted with AES-256-GCM using a fresh random nonce before upload. |
+
+The encryption key is re-derived from your password once per app session. After an app restart you will be prompted to "Unlock" sync (re-enter password) before the next sync runs.
+
+### Running the sync server
+
+Requires Docker and Docker Compose.
+
+```bash
+cd sync_server
+docker compose up --build -d
+```
+
+The server listens on port `8080` by default. Expose it however you already expose your LLM server (reverse proxy, Tailscale, WireGuard, …).
+
+To survive container rebuilds without invalidating existing sessions, set a stable JWT secret:
+
+```bash
+# generate once, add to docker-compose.yml under environment:
+openssl rand -hex 32
+```
+
+### Connecting the app
+
+1. Settings → **Sync** → **Setup**
+2. Enter the server URL, e.g. `http://192.168.1.10:8080`
+3. Enter a username and password, then tap **Register** (first device) or **Log in** (subsequent devices)
+4. Tap **Sync Now** — or it kicks off automatically after login
+
+### Sync behaviour
+
+- **Conversations:** union merge — for each conversation the side with the newer `updatedAt` timestamp wins. Conversations present on only one side are copied to the other.
+- **Settings:** last-write-wins based on the last-synced timestamp. Device-specific credentials (sync URL, tokens) are never overwritten.
+- **Deletions:** deleting a conversation sends a tombstone to the server immediately so other devices remove it on next sync.
+
+---
+
 ## Backup & Restore
 
 Settings → **Backup & Restore**
@@ -158,7 +216,7 @@ Settings → **Backup & Restore**
 | `http` | HTTP client |
 | `shared_preferences` | Local persistence |
 | `crypto` | SHA-256 for secret-chat password hashing |
-| `cryptography` | AES-256-GCM + PBKDF2-SHA256 for backup encryption |
+| `cryptography` | AES-256-GCM + PBKDF2-SHA256 for backup and sync encryption |
 | `file_picker` | SAF-based file save / load (backup export & import) |
 | `flutter_markdown` | Markdown rendering in chat bubbles |
 | `uuid` | Conversation / server IDs |
