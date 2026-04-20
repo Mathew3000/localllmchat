@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class ChatInput extends StatefulWidget {
   final bool isStreaming;
@@ -28,6 +29,19 @@ class _ChatInputState extends State<ChatInput> {
       final has = _controller.text.trim().isNotEmpty;
       if (has != _hasText) setState(() => _hasText = has);
     });
+
+    // Desktop: Enter sends, Shift+Enter inserts a newline.
+    // On mobile the soft keyboard never fires physical key events here,
+    // so this is effectively a no-op on Android/iOS.
+    _focusNode.onKeyEvent = (_, event) {
+      if (event is KeyDownEvent &&
+          event.logicalKey == LogicalKeyboardKey.enter &&
+          !HardwareKeyboard.instance.isShiftPressed) {
+        _submit();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
   }
 
   @override
@@ -89,6 +103,8 @@ class _ChatInputState extends State<ChatInput> {
                   contentPadding: const EdgeInsets.symmetric(
                       horizontal: 18, vertical: 12),
                 ),
+                // onSubmitted fires on mobile's keyboard "done" action.
+                // On desktop this is superseded by the FocusNode key handler.
                 onSubmitted: (_) => _submit(),
               ),
             ),

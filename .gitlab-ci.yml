@@ -84,6 +84,9 @@ build:release-apk:
 create-release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
+  variables:
+    # Point glab (used internally by release-cli) at our self-hosted instance.
+    GITLAB_HOST: $CI_SERVER_HOST
   needs:
     - job: build:release-apk
       # No need to download the artifact here; we link to it by URL instead.

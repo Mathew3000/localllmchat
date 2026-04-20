@@ -8,6 +8,10 @@ import '../widgets/chat_input.dart';
 import '../widgets/color_picker.dart';
 import 'settings_screen.dart';
 
+// Width threshold above which the permanent sidebar is shown instead of a drawer.
+const double _kSidebarBreakpoint = 720;
+const double _kSidebarWidth = 300;
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
 
@@ -17,6 +21,7 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final _scrollController = ScrollController();
+  // Only used on mobile (drawer trigger).
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
@@ -41,12 +46,107 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final isDesktop =
+        MediaQuery.sizeOf(context).width >= _kSidebarBreakpoint;
+
     return Consumer<AppProvider>(
       builder: (context, p, _) {
         final bgColor = p.settings.backgroundColor != null
             ? Color(p.settings.backgroundColor!)
             : null;
+
+        // ── Shared action buttons ──────────────────────────────────────────
+        final actions = <Widget>[
+          if (p.mcpConfigured)
+            Tooltip(
+              message: p.mcpActive
+                  ? 'Tools on — tap to disable'
+                  : 'Tools off — tap to enable',
+              child: IconButton(
+                icon: Icon(
+                  p.mcpActive
+                      ? Icons.extension_rounded
+                      : Icons.extension_off_rounded,
+                  color: p.mcpActive
+                      ? Theme.of(context).colorScheme.primary
+                      : Theme.of(context)
+                          .colorScheme
+                          .onSurfaceVariant
+                          .withValues(alpha: 0.5),
+                ),
+                onPressed: p.toggleMcp,
+              ),
+            ),
+          if (p.settings.baseUrlAway.isNotEmpty)
+            Tooltip(
+              message: p.usingAwayUrl
+                  ? 'Away (VPN) — tap to recheck'
+                  : 'Home — tap to recheck',
+              child: IconButton(
+                icon: Icon(
+                  p.usingAwayUrl
+                      ? Icons.router_outlined
+                      : Icons.home_rounded,
+                  color: p.usingAwayUrl
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                ),
+                onPressed: p.recheckNetwork,
+              ),
+            ),
+          IconButton(
+            icon: const Icon(Icons.add_comment_outlined),
+            tooltip: 'New chat',
+            onPressed: () {
+              p.newConversation();
+              _scrollToBottom(animated: false);
+            },
+          ),
+          // Settings only in AppBar on mobile; on desktop it lives in the sidebar.
+          if (!isDesktop)
+            IconButton(
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: 'Settings',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              ),
+            ),
+        ];
+
+        // ── Chat panel content (shared between layouts) ────────────────────
+        Widget chatPanel = _buildChatPanel(p, bgColor);
+
+        if (isDesktop) {
+          return Scaffold(
+            backgroundColor: bgColor,
+            body: Row(
+              children: [
+                // ── Permanent sidebar ──────────────────────────────────────
+                SizedBox(
+                  width: _kSidebarWidth,
+                  child: _DesktopSidebar(scrollToBottom: _scrollToBottom),
+                ),
+                const VerticalDivider(width: 1, thickness: 1),
+                // ── Chat area ─────────────────────────────────────────────
+                Expanded(
+                  child: Column(
+                    children: [
+                      _DesktopChatHeader(
+                        title: p.activeConversation?.title ?? 'LocalLLMChat',
+                        actions: actions,
+                        bgColor: bgColor,
+                      ),
+                      Expanded(child: chatPanel),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        // ── Mobile layout ─────────────────────────────────────────────────
         return Scaffold(
           key: _scaffoldKey,
           backgroundColor: bgColor,
@@ -60,90 +160,208 @@ class _ChatScreenState extends State<ChatScreen> {
             title: Text(
               p.activeConversation?.title ?? 'LocalLLMChat',
               overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.titleMedium
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600),
             ),
-            actions: [
-              // MCP toggle — only shown when MCP is configured and tools are loaded.
-              if (p.mcpConfigured)
-                Tooltip(
-                  message: p.mcpActive
-                      ? 'Tools on — tap to disable'
-                      : 'Tools off — tap to enable',
-                  child: IconButton(
-                    icon: Icon(
-                      p.mcpActive
-                          ? Icons.extension_rounded
-                          : Icons.extension_off_rounded,
-                      color: p.mcpActive
-                          ? theme.colorScheme.primary
-                          : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                    ),
-                    onPressed: p.toggleMcp,
-                  ),
-                ),
-              // Network indicator — only shown when an away URL is configured.
-              if (p.settings.baseUrlAway.isNotEmpty)
-                Tooltip(
-                  message: p.usingAwayUrl
-                      ? 'Away (VPN) — tap to recheck'
-                      : 'Home — tap to recheck',
-                  child: IconButton(
-                    icon: Icon(
-                      p.usingAwayUrl ? Icons.router_outlined : Icons.home_rounded,
-                      color: p.usingAwayUrl ? theme.colorScheme.primary : null,
-                    ),
-                    onPressed: p.recheckNetwork,
-                  ),
-                ),
-              IconButton(
-                icon: const Icon(Icons.add_comment_outlined),
-                tooltip: 'New chat',
-                onPressed: () {
-                  p.newConversation();
-                  _scrollToBottom(animated: false);
-                },
-              ),
-              IconButton(
-                icon: const Icon(Icons.settings_outlined),
-                tooltip: 'Settings',
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                ),
-              ),
-            ],
+            actions: actions,
             elevation: 0,
             scrolledUnderElevation: 1,
           ),
-          body: Column(
-            children: [
-              Expanded(child: _MessageList(scrollController: _scrollController)),
-              Consumer<AppProvider>(
-                builder: (_, p, __) {
-                  if (p.error != null) {
-                    return _ErrorBanner(
-                      error: p.error!,
-                      onDismiss: p.clearError,
-                    );
-                  }
-                  return const SizedBox.shrink();
-                },
-              ),
-              Consumer<AppProvider>(
-                builder: (_, p, __) => ChatInput(
-                  isStreaming: p.isStreaming,
-                  onSend: (text) {
-                    p.sendMessage(text);
-                    _scrollToBottom();
-                  },
-                  onCancel: p.cancelStream,
-                ),
-              ),
-            ],
-          ),
+          body: chatPanel,
         );
       },
+    );
+  }
+
+  /// The message list + error banner + input, used by both layouts.
+  Widget _buildChatPanel(AppProvider p, Color? bgColor) {
+    return Column(
+      children: [
+        Expanded(
+          child: _MessageList(scrollController: _scrollController),
+        ),
+        Consumer<AppProvider>(
+          builder: (_, p, __) {
+            if (p.error != null) {
+              return _ErrorBanner(
+                  error: p.error!, onDismiss: p.clearError);
+            }
+            return const SizedBox.shrink();
+          },
+        ),
+        Consumer<AppProvider>(
+          builder: (_, p, __) => ChatInput(
+            isStreaming: p.isStreaming,
+            onSend: (text) {
+              p.sendMessage(text);
+              _scrollToBottom();
+            },
+            onCancel: p.cancelStream,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ── Desktop: permanent sidebar ────────────────────────────────────────────────
+
+class _DesktopSidebar extends StatelessWidget {
+  final void Function({bool animated}) scrollToBottom;
+  const _DesktopSidebar({required this.scrollToBottom});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: cs.surfaceContainerLow,
+      child: Column(
+        children: [
+          // ── Header ──────────────────────────────────────────────────────
+          _SidebarHeader(),
+          // ── New chat ─────────────────────────────────────────────────────
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Consumer<AppProvider>(
+              builder: (_, p, __) => FilledButton.tonalIcon(
+                onPressed: () => p.newConversation(),
+                icon: const Icon(Icons.add_rounded),
+                label: const Text('New Chat'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 44),
+                ),
+              ),
+            ),
+          ),
+          const Divider(height: 1),
+          // ── Conversation list ─────────────────────────────────────────
+          const Expanded(
+            child: _ConversationListView(closeDrawer: false),
+          ),
+          const Divider(height: 1),
+          // ── Settings ──────────────────────────────────────────────────
+          ListTile(
+            leading: const Icon(Icons.settings_outlined),
+            title: const Text('Settings'),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+          ),
+          SizedBox(height: MediaQuery.viewPaddingOf(context).bottom),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Desktop: thin header bar above the chat panel ─────────────────────────────
+
+class _DesktopChatHeader extends StatelessWidget {
+  final String title;
+  final List<Widget> actions;
+  final Color? bgColor;
+
+  const _DesktopChatHeader({
+    required this.title,
+    required this.actions,
+    this.bgColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Material(
+      color: bgColor ?? cs.surface,
+      elevation: 0,
+      child: Container(
+        height: kToolbarHeight,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+                color: cs.outlineVariant.withValues(alpha: 0.5), width: 1),
+          ),
+        ),
+        child: Row(
+          children: [
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                title,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w600),
+              ),
+            ),
+            ...actions,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Shared sidebar header (app name + secret unlock trigger) ──────────────────
+
+class _SidebarHeader extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Consumer<AppProvider>(
+      builder: (_, p, __) => GestureDetector(
+        onLongPress: p.hasSecretPassword
+            ? () => p.secretsUnlocked
+                ? _confirmLock(context, p)
+                : _showUnlockDialog(context, p)
+            : null,
+        child: Container(
+          width: double.infinity,
+          padding: EdgeInsets.fromLTRB(
+              16, 16 + MediaQuery.viewPaddingOf(context).top, 16, 16),
+          color: cs.primary,
+          child: Row(
+            children: [
+              Icon(Icons.auto_awesome_rounded,
+                  color: cs.onPrimary, size: 28),
+              const SizedBox(width: 10),
+              Text(
+                'LocalLLMChat',
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(color: cs.onPrimary),
+              ),
+              if (p.secretsUnlocked) ...[
+                const Spacer(),
+                Icon(Icons.lock_open_rounded,
+                    color: cs.onPrimary.withValues(alpha: 0.5), size: 16),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showUnlockDialog(BuildContext context, AppProvider provider) {
+    showDialog<void>(
+        context: context,
+        builder: (_) => _UnlockDialog(provider: provider));
+  }
+
+  void _confirmLock(BuildContext context, AppProvider provider) {
+    provider.lockSecrets();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Secret chats locked'),
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: 1),
+      ),
     );
   }
 }
@@ -163,8 +381,6 @@ class _MessageList extends StatelessWidget {
           return _EmptyState(activeUrl: p.activeBaseUrl);
         }
 
-        // Auto-scroll to bottom when new content arrives, but only if the
-        // user is already within 80 px of the bottom (i.e. hasn't scrolled up).
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!scrollController.hasClients) return;
           final pos = scrollController.position;
@@ -177,7 +393,6 @@ class _MessageList extends StatelessWidget {
           }
         });
 
-        // Fallback chain: per-chat override → global default → theme default (null)
         final userColor = conv.userBubbleColor != null
             ? Color(conv.userBubbleColor!)
             : p.settings.defaultUserBubbleColor != null
@@ -188,6 +403,7 @@ class _MessageList extends StatelessWidget {
             : p.settings.defaultAssistantBubbleColor != null
                 ? Color(p.settings.defaultAssistantBubbleColor!)
                 : null;
+
         return ListView.builder(
           controller: scrollController,
           padding: const EdgeInsets.symmetric(vertical: 12),
@@ -285,22 +501,20 @@ class _ErrorBanner extends StatelessWidget {
   }
 }
 
-// ── Drawer ────────────────────────────────────────────────────────────────────
+// ── Mobile drawer ─────────────────────────────────────────────────────────────
 
 class _ConversationDrawer extends StatelessWidget {
   const _ConversationDrawer();
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-
     return Drawer(
       child: Column(
         children: [
           _DrawerHeader(),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: Consumer<AppProvider>(
               builder: (_, p, __) => FilledButton.tonalIcon(
                 onPressed: () {
@@ -316,41 +530,8 @@ class _ConversationDrawer extends StatelessWidget {
             ),
           ),
           const Divider(),
-          Expanded(
-            child: Consumer<AppProvider>(
-              builder: (_, p, __) {
-                final visible = p.visibleConversations;
-                if (visible.isEmpty) {
-                  return Center(
-                    child: Text(
-                      'No conversations yet',
-                      style: TextStyle(color: cs.onSurfaceVariant),
-                    ),
-                  );
-                }
-                return ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  itemCount: visible.length,
-                  itemBuilder: (_, i) {
-                    final conv = visible[i];
-                    final isActive = conv.id == p.activeConversation?.id;
-                    return _ConversationTile(
-                      conv: conv,
-                      isActive: isActive,
-                      showSecretBadge: p.secretsUnlocked && conv.isSecret,
-                      onTap: () {
-                        p.selectConversation(conv);
-                        Navigator.pop(context);
-                      },
-                      onDelete: () => p.deleteConversation(conv.id),
-                      onToggleSecret: p.hasSecretPassword && p.secretsUnlocked
-                          ? () => p.toggleConversationSecret(conv.id)
-                          : null,
-                    );
-                  },
-                );
-              },
-            ),
+          const Expanded(
+            child: _ConversationListView(closeDrawer: true),
           ),
         ],
       ),
@@ -358,7 +539,55 @@ class _ConversationDrawer extends StatelessWidget {
   }
 }
 
-// ── Drawer header with hidden unlock trigger ──────────────────────────────────
+// ── Shared conversation list (used in both drawer and desktop sidebar) ─────────
+
+class _ConversationListView extends StatelessWidget {
+  /// When true, tapping a conversation calls Navigator.pop to close the drawer.
+  final bool closeDrawer;
+  const _ConversationListView({required this.closeDrawer});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Consumer<AppProvider>(
+      builder: (_, p, __) {
+        final visible = p.visibleConversations;
+        if (visible.isEmpty) {
+          return Center(
+            child: Text(
+              'No conversations yet',
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+          );
+        }
+        return ListView.builder(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          itemCount: visible.length,
+          itemBuilder: (_, i) {
+            final conv = visible[i];
+            final isActive = conv.id == p.activeConversation?.id;
+            return _ConversationTile(
+              conv: conv,
+              isActive: isActive,
+              showSecretBadge: p.secretsUnlocked && conv.isSecret,
+              onTap: () {
+                p.selectConversation(conv);
+                if (closeDrawer) Navigator.pop(context);
+              },
+              onDelete: () => p.deleteConversation(conv.id),
+              onToggleSecret:
+                  p.hasSecretPassword && p.secretsUnlocked
+                      ? () => p.toggleConversationSecret(conv.id)
+                      : null,
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+// ── Mobile drawer header with hidden unlock trigger ───────────────────────────
 
 class _DrawerHeader extends StatelessWidget {
   @override
@@ -369,7 +598,6 @@ class _DrawerHeader extends StatelessWidget {
     return Consumer<AppProvider>(
       builder: (_, p, __) {
         return GestureDetector(
-          // ── Hidden trigger: long-press the header to unlock/lock secrets ──
           onLongPress: p.hasSecretPassword
               ? () => p.secretsUnlocked
                   ? _confirmLock(context, p)
@@ -393,7 +621,6 @@ class _DrawerHeader extends StatelessWidget {
                     ),
                   ],
                 ),
-                // Subtle unlocked indicator — only visible when secrets are open
                 if (p.secretsUnlocked)
                   Positioned(
                     bottom: 0,
@@ -587,7 +814,6 @@ class _ConversationTile extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Handle
             Container(
               width: 36,
               height: 4,
@@ -597,9 +823,9 @@ class _ConversationTile extends StatelessWidget {
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            // Title
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Text(
                 conv.title,
                 style: Theme.of(outerContext)
@@ -611,7 +837,6 @@ class _ConversationTile extends StatelessWidget {
               ),
             ),
             const Divider(),
-            // ── User bubble colour ──────────────────────────────────────
             ListTile(
               leading: Icon(Icons.person_rounded, color: cs.primary),
               title: const Text('User bubble color'),
@@ -629,9 +854,9 @@ class _ConversationTile extends StatelessWidget {
                 ),
               ),
             ),
-            // ── AI bubble colour ────────────────────────────────────────
             ListTile(
-              leading: Icon(Icons.auto_awesome_rounded, color: cs.primary),
+              leading:
+                  Icon(Icons.auto_awesome_rounded, color: cs.primary),
               title: const Text('AI bubble color'),
               trailing: conv.assistantBubbleColor != null
                   ? _ColorDot(color: Color(conv.assistantBubbleColor!))
@@ -648,7 +873,6 @@ class _ConversationTile extends StatelessWidget {
               ),
             ),
             const Divider(),
-            // Toggle secret
             if (onToggleSecret != null)
               ListTile(
                 leading: Icon(
@@ -657,19 +881,17 @@ class _ConversationTile extends StatelessWidget {
                       : Icons.lock_outline_rounded,
                   color: cs.primary,
                 ),
-                title: Text(
-                  conv.isSecret
-                      ? 'Remove from secret chats'
-                      : 'Move to secret chats',
-                ),
+                title: Text(conv.isSecret
+                    ? 'Remove from secret chats'
+                    : 'Move to secret chats'),
                 onTap: () {
                   Navigator.pop(outerContext);
                   onToggleSecret!();
                 },
               ),
-            // Delete
             ListTile(
-              leading: Icon(Icons.delete_outline_rounded, color: cs.error),
+              leading:
+                  Icon(Icons.delete_outline_rounded, color: cs.error),
               title: Text('Delete', style: TextStyle(color: cs.error)),
               onTap: () {
                 Navigator.pop(outerContext);
