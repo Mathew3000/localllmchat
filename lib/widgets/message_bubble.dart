@@ -91,57 +91,71 @@ class MessageBubble extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Row(
-        mainAxisAlignment:
-            isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.end,
+      child: Column(
+        crossAxisAlignment:
+            isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         children: [
-          if (!isUser) ...[
-            _Avatar(isUser: false, colorScheme: colorScheme),
-            const SizedBox(width: 8),
-          ],
-          Flexible(
-            child: SelectionArea(
-              child: GestureDetector(
-              onLongPress: () => _copyToClipboard(context),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: bubbleBg,
-                  borderRadius: BorderRadius.only(
-                    topLeft: const Radius.circular(18),
-                    topRight: const Radius.circular(18),
-                    bottomLeft: Radius.circular(isUser ? 18 : 4),
-                    bottomRight: Radius.circular(isUser ? 4 : 18),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: isUser
-                    ? Text(
-                        message.content,
-                        style: TextStyle(
-                          color: userBubbleColor != null
-                              ? onColor(userBubbleColor!)
-                              : colorScheme.onPrimary,
-                          fontSize: 15,
-                          height: 1.4,
+          Row(
+            mainAxisAlignment:
+                isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (!isUser) ...[
+                _Avatar(isUser: false, colorScheme: colorScheme),
+                const SizedBox(width: 8),
+              ],
+              Flexible(
+                child: GestureDetector(
+                  onLongPress: () => _copyToClipboard(context),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: bubbleBg,
+                      borderRadius: BorderRadius.only(
+                        topLeft: const Radius.circular(18),
+                        topRight: const Radius.circular(18),
+                        bottomLeft: Radius.circular(isUser ? 18 : 4),
+                        bottomRight: Radius.circular(isUser ? 4 : 18),
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.08),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
                         ),
-                      )
-                    : _buildAssistantContent(context, theme),
+                      ],
+                    ),
+                    child: isUser
+                        ? SelectableText(
+                            message.content,
+                            style: TextStyle(
+                              color: userBubbleColor != null
+                                  ? onColor(userBubbleColor!)
+                                  : colorScheme.onPrimary,
+                              fontSize: 15,
+                              height: 1.4,
+                            ),
+                          )
+                        : _buildAssistantContent(context, theme),
+                  ),
+                ),
               ),
-            ),
-            ),
+              if (isUser) ...[
+                const SizedBox(width: 8),
+                _Avatar(isUser: true, colorScheme: colorScheme),
+              ],
+            ],
           ),
-          if (isUser) ...[
-            const SizedBox(width: 8),
-            _Avatar(isUser: true, colorScheme: colorScheme),
-          ],
+          // Copy button — indented to align with the bubble edge (past the avatar).
+          Padding(
+            padding: EdgeInsets.only(
+              top: 2,
+              left: isUser ? 0 : 36,  // 28 avatar + 8 gap
+              right: isUser ? 36 : 0,
+            ),
+            child: _CopyButton(onTap: () => _copyToClipboard(context)),
+          ),
         ],
       ),
     );
@@ -265,7 +279,7 @@ class _MarkdownContent extends StatelessWidget {
   Widget build(BuildContext context) {
     return MarkdownBody(
       data: text,
-      selectable: false,
+      selectable: true,
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
         p: theme.textTheme.bodyMedium?.copyWith(
           fontSize: 15,
@@ -424,7 +438,7 @@ class _ThinkingBlockState extends State<_ThinkingBlock>
                     border: Border.all(
                         color: borderColor.withValues(alpha: 0.4)),
                   ),
-                  child: Text(
+                  child: SelectableText(
                     widget.thinkText.trim(),
                     style: TextStyle(
                       fontSize: 13,
@@ -502,6 +516,43 @@ class _TypingIndicatorState extends State<_TypingIndicator>
           ),
         );
       }),
+    );
+  }
+}
+
+// ── Copy button ───────────────────────────────────────────────────────────────
+
+class _CopyButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _CopyButton({required this.onTap});
+
+  @override
+  State<_CopyButton> createState() => _CopyButtonState();
+}
+
+class _CopyButtonState extends State<_CopyButton> {
+  bool _copied = false;
+
+  Future<void> _handleTap() async {
+    widget.onTap();
+    setState(() => _copied = true);
+    await Future.delayed(const Duration(seconds: 2));
+    if (mounted) setState(() => _copied = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
+    return GestureDetector(
+      onTap: _handleTap,
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 200),
+        child: _copied
+            ? Icon(Icons.check_rounded,
+                key: const ValueKey('check'), size: 14, color: color)
+            : Icon(Icons.copy_rounded,
+                key: const ValueKey('copy'), size: 14, color: color),
+      ),
     );
   }
 }
