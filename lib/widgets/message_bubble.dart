@@ -101,7 +101,8 @@ class MessageBubble extends StatelessWidget {
             const SizedBox(width: 8),
           ],
           Flexible(
-            child: GestureDetector(
+            child: SelectionArea(
+              child: GestureDetector(
               onLongPress: () => _copyToClipboard(context),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -122,7 +123,7 @@ class MessageBubble extends StatelessWidget {
                   ],
                 ),
                 child: isUser
-                    ? SelectableText(
+                    ? Text(
                         message.content,
                         style: TextStyle(
                           color: userBubbleColor != null
@@ -134,6 +135,7 @@ class MessageBubble extends StatelessWidget {
                       )
                     : _buildAssistantContent(context, theme),
               ),
+            ),
             ),
           ),
           if (isUser) ...[
@@ -263,7 +265,7 @@ class _MarkdownContent extends StatelessWidget {
   Widget build(BuildContext context) {
     return MarkdownBody(
       data: text,
-      selectable: true,
+      selectable: false,
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
         p: theme.textTheme.bodyMedium?.copyWith(
           fontSize: 15,
@@ -422,7 +424,7 @@ class _ThinkingBlockState extends State<_ThinkingBlock>
                     border: Border.all(
                         color: borderColor.withValues(alpha: 0.4)),
                   ),
-                  child: SelectableText(
+                  child: Text(
                     widget.thinkText.trim(),
                     style: TextStyle(
                       fontSize: 13,
