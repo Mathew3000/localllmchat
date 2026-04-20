@@ -23,6 +23,18 @@ class AppSettings {
   /// All configured MCP servers.
   final List<McpServer> mcpServers;
 
+  // ── Sync settings ──────────────────────────────────────────────────────────
+  /// Base URL of the self-hosted sync server, e.g. http://192.168.1.10:8080
+  final String syncUrl;
+  /// Username on the sync server.
+  final String syncUsername;
+  /// JWT access token (stored locally; excluded from sync payload).
+  final String syncAccessToken;
+  /// Refresh token (stored locally; excluded from sync payload).
+  final String syncRefreshToken;
+  /// ISO-8601 timestamp of last successful sync. Null = never synced.
+  final String syncLastAt;
+
   const AppSettings({
     this.baseUrlHome = 'http://192.168.1.1:5000/v1',
     this.baseUrlAway = '',
@@ -39,6 +51,11 @@ class AppSettings {
     this.defaultAssistantBubbleColor,
     this.requestTimeoutSeconds = 300,
     this.mcpServers = const [],
+    this.syncUrl = '',
+    this.syncUsername = '',
+    this.syncAccessToken = '',
+    this.syncRefreshToken = '',
+    this.syncLastAt = '',
   });
 
   /// The URL that is currently active based on [useAwayUrl].
@@ -66,6 +83,11 @@ class AppSettings {
     Object? defaultAssistantBubbleColor = _unset,
     int? requestTimeoutSeconds,
     List<McpServer>? mcpServers,
+    String? syncUrl,
+    String? syncUsername,
+    String? syncAccessToken,
+    String? syncRefreshToken,
+    String? syncLastAt,
   }) =>
       AppSettings(
         baseUrlHome: baseUrlHome ?? this.baseUrlHome,
@@ -90,6 +112,11 @@ class AppSettings {
         requestTimeoutSeconds:
             requestTimeoutSeconds ?? this.requestTimeoutSeconds,
         mcpServers: mcpServers ?? this.mcpServers,
+        syncUrl: syncUrl ?? this.syncUrl,
+        syncUsername: syncUsername ?? this.syncUsername,
+        syncAccessToken: syncAccessToken ?? this.syncAccessToken,
+        syncRefreshToken: syncRefreshToken ?? this.syncRefreshToken,
+        syncLastAt: syncLastAt ?? this.syncLastAt,
       );
 
   Map<String, dynamic> toJson() => {
@@ -107,7 +134,22 @@ class AppSettings {
         'defaultAssistantBubbleColor': defaultAssistantBubbleColor,
         'requestTimeoutSeconds': requestTimeoutSeconds,
         'mcpServers': mcpServers.map((s) => s.toJson()).toList(),
+        'syncUrl': syncUrl,
+        'syncUsername': syncUsername,
+        'syncAccessToken': syncAccessToken,
+        'syncRefreshToken': syncRefreshToken,
+        'syncLastAt': syncLastAt,
       };
+
+  /// Settings JSON for the sync payload — excludes device-specific credentials
+  /// so tokens and last-sync timestamps are not overwritten on other devices.
+  Map<String, dynamic> toSyncJson() {
+    final j = toJson();
+    j.remove('syncAccessToken');
+    j.remove('syncRefreshToken');
+    j.remove('syncLastAt');
+    return j;
+  }
 
   factory AppSettings.fromJson(Map<String, dynamic> json) {
     // ── Migrate old single-server config ────────────────────────────────────
@@ -145,6 +187,11 @@ class AppSettings {
       requestTimeoutSeconds:
           json['requestTimeoutSeconds'] as int? ?? 300,
       mcpServers: mcpServers,
+      syncUrl: json['syncUrl'] as String? ?? '',
+      syncUsername: json['syncUsername'] as String? ?? '',
+      syncAccessToken: json['syncAccessToken'] as String? ?? '',
+      syncRefreshToken: json['syncRefreshToken'] as String? ?? '',
+      syncLastAt: json['syncLastAt'] as String? ?? '',
     );
   }
 }

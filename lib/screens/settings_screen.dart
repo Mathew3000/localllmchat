@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import '../services/backup_crypto.dart';
+import '../services/sync_service.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/settings.dart';
@@ -320,6 +321,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Privacy'),
           const _SecretChatsCard(),
+          const SizedBox(height: 16),
+          const _SectionHeader(title: 'Sync'),
+          const _SyncCard(),
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Backup & Restore'),
           const _BackupCard(),
@@ -1168,6 +1172,327 @@ class _TimeoutFieldState extends State<_TimeoutField> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ── Sync card ─────────────────────────────────────────────────────────────────
+
+class _SyncCard extends StatelessWidget {
+  const _SyncCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppProvider>(
+      builder: (_, provider, __) {
+        final s = provider.settings;
+        final configured = provider.syncConfigured;
+        final ready = provider.syncReady;
+        final status = provider.syncStatus;
+
+        return Card(
+          margin: EdgeInsets.zero,
+          child: Column(
+            children: [
+              // Status / login tile
+              ListTile(
+                leading: Icon(
+                  ready
+                      ? Icons.cloud_done_outlined
+                      : configured
+                          ? Icons.cloud_off_outlined
+                          : Icons.cloud_outlined,
+                  color: ready
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                ),
+                title: Text(configured
+                    ? 'Sync: ${s.syncUsername}'
+                    : 'Sync: not configured'),
+                subtitle: Text(
+                  ready
+                      ? (s.syncLastAt.isNotEmpty
+                          ? 'Last synced ${_formatSyncTime(s.syncLastAt)}'
+                          : 'Ready — tap Sync Now')
+                      : configured
+                          ? 'Key not loaded — log in to sync'
+                          : 'Set up a sync server in Setup',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                trailing: status == SyncStatus.syncing
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : null,
+              ),
+              if (provider.syncError != null) ...[
+                const Divider(height: 1),
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Text(
+                    provider.syncError!,
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.error),
+                  ),
+                ),
+              ],
+              const Divider(height: 1),
+              // Action row
+              OverflowBar(
+                alignment: MainAxisAlignment.end,
+                children: [
+                  if (configured)
+                    TextButton(
+                      onPressed: () => _confirmLogout(context, provider),
+                      child: const Text('Log out'),
+                    ),
+                  if (ready)
+                    FilledButton.tonal(
+                      onPressed: status == SyncStatus.syncing
+                          ? null
+                          : () => provider.syncNow(),
+                      child: const Text('Sync Now'),
+                    ),
+                  if (!configured)
+                    FilledButton.tonal(
+                      onPressed: () => _showSetupDialog(context, provider),
+                      child: const Text('Setup'),
+                    )
+                  else if (!ready)
+                    FilledButton.tonal(
+                      onPressed: () =>
+                          _showLoginDialog(context, provider, isSetup: false),
+                      child: const Text('Unlock'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  String _formatSyncTime(String iso) {
+    try {
+      final dt = DateTime.parse(iso).toLocal();
+      final now = DateTime.now();
+      final diff = now.difference(dt);
+      if (diff.inMinutes < 1) return 'just now';
+      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+      if (diff.inHours < 24) return '${diff.inHours}h ago';
+      return '${diff.inDays}d ago';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<void> _showSetupDialog(
+      BuildContext context, AppProvider provider) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _SyncSetupDialog(provider: provider),
+    );
+  }
+
+  Future<void> _showLoginDialog(BuildContext context, AppProvider provider,
+      {required bool isSetup}) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) =>
+          _SyncSetupDialog(provider: provider, loginOnly: !isSetup),
+    );
+  }
+
+  Future<void> _confirmLogout(
+      BuildContext context, AppProvider provider) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Log out of sync?'),
+        content: const Text(
+            'Your local chats are unaffected. You can log back in at any time.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Log out')),
+        ],
+      ),
+    );
+    if (ok == true) await provider.syncLogout();
+  }
+}
+
+// ── Sync setup / login dialog ─────────────────────────────────────────────────
+
+class _SyncSetupDialog extends StatefulWidget {
+  final AppProvider provider;
+  /// True when the user is already configured and just needs to re-enter their
+  /// password to load the encryption key for this session.
+  final bool loginOnly;
+
+  const _SyncSetupDialog({required this.provider, this.loginOnly = false});
+
+  @override
+  State<_SyncSetupDialog> createState() => _SyncSetupDialogState();
+}
+
+class _SyncSetupDialogState extends State<_SyncSetupDialog> {
+  final _serverCtrl = TextEditingController();
+  final _userCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
+  bool _isRegister = false;
+  bool _obscure = true;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = widget.provider.settings;
+    if (widget.loginOnly) {
+      _serverCtrl.text = s.syncUrl;
+      _userCtrl.text = s.syncUsername;
+    }
+  }
+
+  @override
+  void dispose() {
+    _serverCtrl.dispose();
+    _userCtrl.dispose();
+    _passCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final url = _serverCtrl.text.trim();
+    final user = _userCtrl.text.trim();
+    final pass = _passCtrl.text;
+
+    if ((!widget.loginOnly && url.isEmpty) || user.isEmpty || pass.isEmpty) {
+      setState(() => _error = 'All fields are required.');
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+
+    try {
+      if (_isRegister) {
+        await widget.provider.syncRegister(url, user, pass);
+      } else {
+        await widget.provider.syncLogin(
+          widget.loginOnly ? widget.provider.settings.syncUrl : url,
+          user,
+          pass,
+        );
+      }
+      if (mounted) Navigator.pop(context);
+      // Kick off an initial sync in the background.
+      widget.provider.syncNow();
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.loginOnly
+          ? 'Unlock sync'
+          : _isRegister
+              ? 'Create sync account'
+              : 'Log in to sync'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!widget.loginOnly) ...[
+              TextField(
+                controller: _serverCtrl,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'Server URL',
+                  hintText: 'http://192.168.1.10:8080',
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+            TextField(
+              controller: _userCtrl,
+              decoration: const InputDecoration(labelText: 'Username'),
+              enabled: !widget.loginOnly,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _passCtrl,
+              obscureText: _obscure,
+              decoration: InputDecoration(
+                labelText: 'Password',
+                helperText: 'Derives the encryption key — not stored anywhere.',
+                helperMaxLines: 2,
+                suffixIcon: IconButton(
+                  icon: Icon(
+                      _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                  onPressed: () => setState(() => _obscure = !_obscure),
+                ),
+              ),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!,
+                  style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12)),
+            ],
+            if (!widget.loginOnly) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Text('No account yet?'),
+                  TextButton(
+                    onPressed: _busy
+                        ? null
+                        : () =>
+                            setState(() => _isRegister = !_isRegister),
+                    child: Text(_isRegister ? 'Log in instead' : 'Register'),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: _busy ? null : () => Navigator.pop(context),
+            child: const Text('Cancel')),
+        FilledButton(
+          onPressed: _busy ? null : _submit,
+          child: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : Text(widget.loginOnly
+                  ? 'Unlock'
+                  : _isRegister
+                      ? 'Register'
+                      : 'Log in'),
+        ),
+      ],
     );
   }
 }

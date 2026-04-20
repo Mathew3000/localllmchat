@@ -1,0 +1,17 @@
+services:
+  sync:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - sync_data:/data
+    environment:
+      PORT: "8080"
+      DB_PATH: "/data/sync.db"
+      # Uncomment and set a stable random string to keep sessions alive across
+      # container rebuilds. Generate one with: openssl rand -hex 32
+      # JWT_SECRET: "change-me-to-a-random-64-char-hex-string"
+
+volumes:
+  sync_data:

@@ -14,6 +14,7 @@ import '../services/mcp_service.dart';
 import '../services/mcp_sse_service.dart';
 import '../services/storage_service.dart';
 import '../services/streaming_keep_alive.dart';
+import '../services/sync_service.dart';
 
 class AppProvider extends ChangeNotifier {
   final StorageService _storage = StorageService();
@@ -29,6 +30,14 @@ class AppProvider extends ChangeNotifier {
   bool _isStreaming = false;
 
   bool _secretsUnlocked = false;
+
+  // ── Sync ──────────────────────────────────────────────────────────────────
+
+  /// AES-256 key derived from the sync password at login. Null = not authenticated
+  /// this session (PBKDF2 derivation hasn't been run yet). Kept in memory only.
+  Uint8List? _syncKey;
+  SyncStatus _syncStatus = SyncStatus.idle;
+  String? _syncError;
 
   // ── Network auto-detection (LLM server) ──────────────────────────────────
 
@@ -68,6 +77,15 @@ class AppProvider extends ChangeNotifier {
   bool get hasSecretPassword => _settings.secretPasswordHash.isNotEmpty;
   bool get usingAwayUrl => _usingAway;
   bool get mcpActive => _mcpActive;
+
+  // Sync getters
+  /// True when sync credentials are stored (server URL + tokens configured).
+  bool get syncConfigured =>
+      _settings.syncUrl.isNotEmpty && _settings.syncAccessToken.isNotEmpty;
+  /// True when configured AND the encryption key is loaded for this session.
+  bool get syncReady => syncConfigured && _syncKey != null;
+  SyncStatus get syncStatus => _syncStatus;
+  String? get syncError => _syncError;
 
   /// Flat list of all tools from all enabled servers.
   List<McpToolDef> get mcpTools =>
@@ -740,6 +758,228 @@ class AppProvider extends ChangeNotifier {
 
   Future<void> _persistConversations() =>
       _storage.saveConversations(_conversations);
+
+  // ── Sync ──────────────────────────────────────────────────────────────────
+
+  /// Registers a new sync account. Derives both the auth hash and the in-memory
+  /// encryption key from [password]. Persists tokens to settings.
+  Future<void> syncRegister(
+      String serverUrl, String username, String password) async {
+    final result =
+        await SyncService.register(serverUrl, username, password);
+    final crypto = await SyncCrypto.fromCredentials(password, username);
+    _syncKey = crypto.keyBytes;
+    _settings = _settings.copyWith(
+      syncUrl: serverUrl,
+      syncUsername: username,
+      syncAccessToken: result.accessToken,
+      syncRefreshToken: result.refreshToken,
+    );
+    await _storage.saveSettings(_settings);
+    notifyListeners();
+  }
+
+  /// Logs in to an existing sync account. Derives the encryption key from
+  /// [password] and persists tokens. Call [syncNow] afterwards to pull data.
+  Future<void> syncLogin(
+      String serverUrl, String username, String password) async {
+    final result = await SyncService.login(serverUrl, username, password);
+    final crypto = await SyncCrypto.fromCredentials(password, username);
+    _syncKey = crypto.keyBytes;
+    _settings = _settings.copyWith(
+      syncUrl: serverUrl,
+      syncUsername: username,
+      syncAccessToken: result.accessToken,
+      syncRefreshToken: result.refreshToken,
+    );
+    await _storage.saveSettings(_settings);
+    notifyListeners();
+  }
+
+  /// Removes all sync credentials and clears the in-memory key.
+  Future<void> syncLogout() async {
+    _syncKey = null;
+    _settings = _settings.copyWith(
+      syncUrl: '',
+      syncUsername: '',
+      syncAccessToken: '',
+      syncRefreshToken: '',
+      syncLastAt: '',
+    );
+    _syncStatus = SyncStatus.idle;
+    _syncError = null;
+    await _storage.saveSettings(_settings);
+    notifyListeners();
+  }
+
+  /// Runs a full bidirectional sync.
+  ///
+  /// Conversation strategy: union merge — for each conversation the side with
+  /// the newer [updatedAt] wins. Conversations present on only one side are
+  /// copied to the other. Server-deleted conversations are removed locally.
+  ///
+  /// Settings strategy: last-write-wins based on [updatedAt].
+  ///
+  /// Note: conversations deleted locally (via [deleteConversation]) while
+  /// offline will be re-pulled from the server on the next sync unless the
+  /// deletion has been propagated first. Use [deleteConversation] which sends
+  /// the DELETE immediately; offline deletions are best-effort in v1.
+  Future<void> syncNow() async {
+    if (_syncKey == null) throw StateError('Sync key not loaded — log in first');
+    if (_settings.syncUrl.isEmpty) throw StateError('Sync URL not configured');
+
+    _syncStatus = SyncStatus.syncing;
+    _syncError = null;
+    notifyListeners();
+
+    try {
+      final crypto = SyncCrypto.fromKey(_syncKey!);
+      final svc = SyncService(
+        serverUrl: _settings.syncUrl,
+        accessToken: _settings.syncAccessToken,
+        refreshToken: _settings.syncRefreshToken,
+        onTokensRefreshed: (access, refresh) async {
+          _settings = _settings.copyWith(
+            syncAccessToken: access,
+            syncRefreshToken: refresh,
+          );
+          await _storage.saveSettings(_settings);
+        },
+      );
+
+      final state = await svc.getState();
+
+      await _syncConversations(svc, crypto, state);
+      await _syncSettings(svc, crypto, state.settingsUpdatedAt);
+
+      _settings = _settings.copyWith(
+          syncLastAt: DateTime.now().toUtc().toIso8601String());
+      await _storage.saveSettings(_settings);
+
+      _syncStatus = SyncStatus.idle;
+    } on SyncAuthExpiredException {
+      _syncKey = null;
+      _settings = _settings.copyWith(syncAccessToken: '', syncRefreshToken: '');
+      await _storage.saveSettings(_settings);
+      _syncStatus = SyncStatus.error;
+      _syncError = 'Session expired — please log in again.';
+    } catch (e) {
+      _syncStatus = SyncStatus.error;
+      _syncError = e.toString();
+    } finally {
+      notifyListeners();
+    }
+  }
+
+  Future<void> _syncConversations(
+    SyncService svc,
+    SyncCrypto crypto,
+    SyncStateResult state,
+  ) async {
+    final localById = {for (final c in _conversations) c.id: c};
+    final serverById = {for (final m in state.conversations) m.id: m};
+
+    // Push: local conversations newer than server (or not on server at all).
+    for (final local in _conversations) {
+      final serverMeta = serverById[local.id];
+      if (serverMeta == null ||
+          (!serverMeta.deleted &&
+              local.updatedAt.isAfter(serverMeta.updatedAt))) {
+        final blob = await crypto
+            .encrypt(jsonEncode(local.toJson()));
+        await svc.putConversation(local.id, blob, local.updatedAt);
+      }
+    }
+
+    // Pull: server conversations newer than local or not present locally.
+    for (final meta in state.conversations) {
+      if (meta.deleted) {
+        // Server tombstone → remove locally.
+        _conversations.removeWhere((c) => c.id == meta.id);
+        continue;
+      }
+      final local = localById[meta.id];
+      if (local == null || meta.updatedAt.isAfter(local.updatedAt)) {
+        final blobResult = await svc.getConversation(meta.id);
+        final plain = await crypto.decrypt(blobResult.encryptedBlob);
+        final conv = Conversation.fromJson(
+            jsonDecode(plain) as Map<String, dynamic>);
+        final idx = _conversations.indexWhere((c) => c.id == meta.id);
+        if (idx >= 0) {
+          _conversations[idx] = conv;
+        } else {
+          _conversations.add(conv);
+        }
+      }
+    }
+
+    // Sort by most recently updated.
+    _conversations.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    await _persistConversations();
+    notifyListeners();
+  }
+
+  Future<void> _syncSettings(
+    SyncService svc,
+    SyncCrypto crypto,
+    DateTime? serverSettingsUpdatedAt,
+  ) async {
+    final localUpdatedAt = _settings.syncLastAt.isNotEmpty
+        ? DateTime.tryParse(_settings.syncLastAt)
+        : null;
+
+    // Push local settings if they're newer (or server has nothing yet).
+    final shouldPush = serverSettingsUpdatedAt == null ||
+        (localUpdatedAt != null &&
+            localUpdatedAt.isAfter(serverSettingsUpdatedAt));
+
+    if (shouldPush) {
+      final blob = await crypto
+          .encrypt(jsonEncode(_settings.toSyncJson()));
+      await svc.putSettings(
+          blob, localUpdatedAt ?? DateTime.now().toUtc());
+    } else {
+      // Pull and merge — preserve device-specific sync credentials.
+      final remote = await svc.getSettings();
+      if (remote != null) {
+        final plain = await crypto.decrypt(remote.encryptedBlob);
+        final remoteSettings = AppSettings.fromJson(
+            jsonDecode(plain) as Map<String, dynamic>);
+        _settings = remoteSettings.copyWith(
+          syncUrl: _settings.syncUrl,
+          syncUsername: _settings.syncUsername,
+          syncAccessToken: _settings.syncAccessToken,
+          syncRefreshToken: _settings.syncRefreshToken,
+          syncLastAt: _settings.syncLastAt,
+        );
+        await _storage.saveSettings(_settings);
+      }
+    }
+  }
+
+  /// Propagates a conversation deletion to the server immediately (when online).
+  /// Falls back to local-only deletion if the sync server is unreachable.
+  Future<void> deleteConversationWithSync(String id) async {
+    deleteConversation(id); // local delete first (instant feedback)
+    if (!syncReady) return;
+    try {
+      final svc = SyncService(
+        serverUrl: _settings.syncUrl,
+        accessToken: _settings.syncAccessToken,
+        refreshToken: _settings.syncRefreshToken,
+        onTokensRefreshed: (access, refresh) async {
+          _settings = _settings.copyWith(
+            syncAccessToken: access,
+            syncRefreshToken: refresh,
+          );
+          await _storage.saveSettings(_settings);
+        },
+      );
+      await svc.deleteConversation(id);
+    } catch (_) {
+      // Offline — deletion will not be propagated; acceptable in v1.
+    }
+  }
 
   // ── Backup / Restore ──────────────────────────────────────────────────────
 
