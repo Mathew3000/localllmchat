@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -208,27 +209,26 @@ class AppProvider extends ChangeNotifier {
 
   // ── MCP: per-server ping & URL selection ──────────────────────────────────
 
+  /// Checks whether the home MCP server is reachable by opening a raw TCP
+  /// connection to its host:port. This avoids depending on any specific HTTP
+  /// endpoint or verb — some MCP servers do not respond to GET /mcp at all,
+  /// which caused spurious timeouts and permanent fallback to the away URL.
   Future<bool> _pingMcpServer(McpServer server) async {
     try {
-      var url = server.baseUrlHome.trimRight();
-      if (url.endsWith('/')) url = url.substring(0, url.length - 1);
-      if (!url.endsWith('/mcp')) url = '$url/mcp';
-      await http
-          .get(Uri.parse(url),
-              headers: {'Accept': 'application/json, text/event-stream'})
-          .timeout(const Duration(milliseconds: 1500));
+      final uri = Uri.tryParse(server.baseUrlHome.trim());
+      if (uri == null || !uri.hasAuthority) return false;
+      final port = uri.hasPort
+          ? uri.port
+          : (uri.scheme == 'https' ? 443 : 80);
+      final socket = await Socket.connect(
+        uri.host,
+        port,
+        timeout: const Duration(milliseconds: 1500),
+      );
+      socket.destroy();
       return true;
-    } on TimeoutException {
+    } catch (_) {
       return false;
-    } catch (e) {
-      final msg = e.toString().toLowerCase();
-      if (msg.contains('unreachable') ||
-          msg.contains('no route') ||
-          msg.contains('network is down') ||
-          msg.contains('failed host lookup')) {
-        return false;
-      }
-      return true;
     }
   }
 
