@@ -2,6 +2,8 @@
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
 
+#include <algorithm>
+
 #include "flutter_window.h"
 #include "utils.h"
 
@@ -27,8 +29,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // Size the window to 80 % of the primary screen, centred, min 900×600.
   int screenW = ::GetSystemMetrics(SM_CXSCREEN);
   int screenH = ::GetSystemMetrics(SM_CYSCREEN);
-  int winW = max(screenW * 4 / 5, 900);
-  int winH = max(screenH * 4 / 5, 600);
+  int winW = std::max(screenW * 4 / 5, 900);
+  int winH = std::max(screenH * 4 / 5, 600);
   int originX = (screenW - winW) / 2;
   int originY = (screenH - winH) / 2;
 
