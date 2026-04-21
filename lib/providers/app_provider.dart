@@ -237,7 +237,8 @@ class AppProvider extends ChangeNotifier {
   /// Returns a cached service if URL and concrete type still match;
   /// otherwise creates a new one.
   BaseMcpService _reuseOrCreate(
-      String serverId, String url, McpTransport type) {
+      String serverId, String url, McpTransport type,
+      {Map<String, String> headers = const {}}) {
     final cached = _mcpServiceCache[serverId];
     if (cached != null && cached.baseUrl == url) {
       if (type == McpTransport.sse && cached is McpSseService) return cached;
@@ -246,13 +247,16 @@ class AppProvider extends ChangeNotifier {
       }
     }
     cached?.dispose();
-    return type == McpTransport.sse ? McpSseService(url) : McpService(url);
+    return type == McpTransport.sse
+        ? McpSseService(url, extraHeaders: headers)
+        : McpService(url, extraHeaders: headers);
   }
 
   /// For [McpTransport.auto]: tries Streamable-HTTP first; on 404/405 falls
   /// back to HTTP+SSE.  Reuses a cached service if the URL hasn't changed.
   Future<(BaseMcpService, List<McpToolDef>)> _autoDetect(
-      String serverId, String url) async {
+      String serverId, String url,
+      {Map<String, String> headers = const {}}) async {
     // Reuse whatever worked last time (same URL).
     final cached = _mcpServiceCache[serverId];
     if (cached != null && cached.baseUrl == url) {
@@ -266,7 +270,7 @@ class AppProvider extends ChangeNotifier {
 
     // Try Streamable-HTTP.
     try {
-      final svc = McpService(url);
+      final svc = McpService(url, extraHeaders: headers);
       final tools = await svc.listTools();
       return (svc, tools);
     } on McpHttpException catch (e) {
@@ -275,7 +279,7 @@ class AppProvider extends ChangeNotifier {
     }
 
     // Fall back to HTTP+SSE.
-    final svc = McpSseService(url);
+    final svc = McpSseService(url, extraHeaders: headers);
     final tools = await svc.listTools();
     return (svc, tools);
   }
@@ -340,13 +344,16 @@ class AppProvider extends ChangeNotifier {
 
       switch (server.transport) {
         case McpTransport.streamableHttp:
-          service = _reuseOrCreate(server.id, activeUrl, McpTransport.streamableHttp);
+          service = _reuseOrCreate(server.id, activeUrl, McpTransport.streamableHttp,
+              headers: server.headers);
           tools = await service.listTools();
         case McpTransport.sse:
-          service = _reuseOrCreate(server.id, activeUrl, McpTransport.sse);
+          service = _reuseOrCreate(server.id, activeUrl, McpTransport.sse,
+              headers: server.headers);
           tools = await service.listTools();
         case McpTransport.auto:
-          (service, tools) = await _autoDetect(server.id, activeUrl);
+          (service, tools) = await _autoDetect(server.id, activeUrl,
+              headers: server.headers);
       }
 
       _mcpServiceCache[server.id] = service;

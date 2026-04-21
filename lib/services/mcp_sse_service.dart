@@ -17,7 +17,11 @@ class McpSseService extends BaseMcpService {
   @override
   final String baseUrl;
 
-  McpSseService(this.baseUrl);
+  /// Extra headers injected into every HTTP request (e.g. auth tokens).
+  final Map<String, String> extraHeaders;
+
+  McpSseService(this.baseUrl, {Map<String, String>? extraHeaders})
+      : extraHeaders = extraHeaders ?? const {};
 
   final http.Client _client = http.Client();
 
@@ -84,6 +88,8 @@ class McpSseService extends BaseMcpService {
     final request = http.Request('GET', Uri.parse(_sseUrl));
     request.headers['Accept'] = 'text/event-stream';
     request.headers['Cache-Control'] = 'no-cache';
+    // Inject auth headers (after protocol headers so they can override).
+    extraHeaders.forEach((k, v) => request.headers[k] = v);
 
     final response =
         await _client.send(request).timeout(const Duration(seconds: 10));
@@ -116,7 +122,7 @@ class McpSseService extends BaseMcpService {
     await _client
         .post(
           Uri.parse(_postEndpoint!),
-          headers: {'Content-Type': 'application/json'},
+          headers: {'Content-Type': 'application/json', ...extraHeaders},
           body: jsonEncode({
             'jsonrpc': '2.0',
             'id': initId,
@@ -137,7 +143,7 @@ class McpSseService extends BaseMcpService {
       _client
           .post(
             Uri.parse(_postEndpoint!),
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', ...extraHeaders},
             body: jsonEncode(
                 {'jsonrpc': '2.0', 'method': 'notifications/initialized'}),
           )
@@ -221,7 +227,7 @@ class McpSseService extends BaseMcpService {
     final resp = await _client
         .post(
           Uri.parse(_postEndpoint!),
-          headers: {'Content-Type': 'application/json'},
+          headers: {'Content-Type': 'application/json', ...extraHeaders},
           body: jsonEncode(
               {'jsonrpc': '2.0', 'id': id, 'method': method, 'params': params}),
         )

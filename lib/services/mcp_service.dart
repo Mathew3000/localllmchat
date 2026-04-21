@@ -13,7 +13,12 @@ class McpService extends BaseMcpService {
   @override
   final String baseUrl;
 
-  McpService(this.baseUrl);
+  /// Extra headers injected into every request (e.g. auth tokens).
+  /// These are merged after the protocol headers so they can override defaults.
+  final Map<String, String> extraHeaders;
+
+  McpService(this.baseUrl, {Map<String, String>? extraHeaders})
+      : extraHeaders = extraHeaders ?? const {};
 
   String? _sessionId;
 
@@ -28,6 +33,7 @@ class McpService extends BaseMcpService {
         'Content-Type': 'application/json',
         'Accept': 'application/json, text/event-stream',
         if (_sessionId != null) 'Mcp-Session-Id': _sessionId!,
+        ...extraHeaders,
       };
 
   // ── Session handshake ───────────────────────────────────────────────────────
@@ -35,14 +41,11 @@ class McpService extends BaseMcpService {
   Future<void> _ensureSession() async {
     if (_sessionId != null) return;
 
-    // 1. initialize
+    // 1. initialize  (use _headers so custom auth headers are included)
     final initResp = await http
         .post(
           Uri.parse(_endpoint),
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/event-stream',
-          },
+          headers: _headers,
           body: jsonEncode({
             'jsonrpc': '2.0',
             'id': DateTime.now().millisecondsSinceEpoch,

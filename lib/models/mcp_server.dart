@@ -30,6 +30,13 @@ class McpServer {
   /// Which transport protocol to use (default: auto-detect).
   McpTransport transport;
 
+  /// Extra HTTP headers sent with every request to this server.
+  ///
+  /// Intended for authentication (e.g. `{"Authorization": "Bearer <token>"}`).
+  /// Stored in settings JSON and included in the encrypted sync blob —
+  /// the sync server never sees the plaintext values.
+  Map<String, String> headers;
+
   McpServer({
     String? id,
     this.name = 'New Server',
@@ -37,6 +44,7 @@ class McpServer {
     this.baseUrlAway = '',
     this.enabled = true,
     this.transport = McpTransport.auto,
+    this.headers = const {},
   }) : id = id ?? const Uuid().v4();
 
   McpServer copyWith({
@@ -45,6 +53,7 @@ class McpServer {
     String? baseUrlAway,
     bool? enabled,
     McpTransport? transport,
+    Map<String, String>? headers,
   }) =>
       McpServer(
         id: id,
@@ -53,6 +62,7 @@ class McpServer {
         baseUrlAway: baseUrlAway ?? this.baseUrlAway,
         enabled: enabled ?? this.enabled,
         transport: transport ?? this.transport,
+        headers: headers ?? Map.of(this.headers),
       );
 
   Map<String, dynamic> toJson() => {
@@ -62,6 +72,7 @@ class McpServer {
         'baseUrlAway': baseUrlAway,
         'enabled': enabled,
         'transport': transport.name, // 'auto' | 'streamableHttp' | 'sse'
+        'headers': headers,
       };
 
   factory McpServer.fromJson(Map<String, dynamic> json) => McpServer(
@@ -74,5 +85,7 @@ class McpServer {
           (t) => t.name == (json['transport'] as String?),
           orElse: () => McpTransport.auto,
         ),
+        headers: (json['headers'] as Map<String, dynamic>? ?? {})
+            .map((k, v) => MapEntry(k, v as String)),
       );
 }
