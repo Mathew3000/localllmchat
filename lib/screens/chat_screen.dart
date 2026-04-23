@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/conversation.dart';
+import '../models/mcp_server.dart';
 import '../providers/app_provider.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/tool_bubble.dart';
@@ -57,26 +58,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
         // ── Shared action buttons ──────────────────────────────────────────
         final actions = <Widget>[
-          if (p.mcpConfigured)
-            Tooltip(
-              message: p.mcpActive
-                  ? 'Tools on — tap to disable'
-                  : 'Tools off — tap to enable',
-              child: IconButton(
-                icon: Icon(
-                  p.mcpActive
-                      ? Icons.extension_rounded
-                      : Icons.extension_off_rounded,
-                  color: p.mcpActive
-                      ? Theme.of(context).colorScheme.primary
-                      : Theme.of(context)
-                          .colorScheme
-                          .onSurfaceVariant
-                          .withValues(alpha: 0.5),
-                ),
-                onPressed: p.toggleMcp,
-              ),
-            ),
+          if (p.mcpConfigured) const _McpToggleButton(),
           if (p.settings.baseUrlAway.isNotEmpty)
             Tooltip(
               message: p.usingAwayUrl
@@ -925,6 +907,166 @@ class _ColorDot extends StatelessWidget {
           width: 1.5,
         ),
       ),
+    );
+  }
+}
+
+// ── MCP toggle button ─────────────────────────────────────────────────────────
+//
+// Short tap  → toggle all MCP tools on/off.
+// Long press → show a popup anchored to the button with per-server switches.
+
+class _McpToggleButton extends StatelessWidget {
+  const _McpToggleButton();
+
+  void _showServerMenu(BuildContext context) {
+    final p = context.read<AppProvider>();
+    final servers = p.settings.mcpServers
+        .where((s) => s.baseUrlHome.isNotEmpty)
+        .toList();
+    if (servers.isEmpty) return;
+
+    final btn = context.findRenderObject() as RenderBox;
+    final overlay =
+        Navigator.of(context).overlay!.context.findRenderObject() as RenderBox;
+    final pos = RelativeRect.fromRect(
+      Rect.fromPoints(
+        btn.localToGlobal(Offset.zero, ancestor: overlay),
+        btn.localToGlobal(btn.size.bottomRight(Offset.zero), ancestor: overlay),
+      ),
+      Offset.zero & overlay.size,
+    );
+
+    showMenu<void>(
+      context: context,
+      position: pos,
+      constraints: const BoxConstraints(minWidth: 240, maxWidth: 320),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      items: [
+        _McpServersMenuEntry(servers: servers, provider: p),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppProvider>(
+      builder: (context, p, _) {
+        final cs = Theme.of(context).colorScheme;
+        return Tooltip(
+          message: p.mcpActive
+              ? 'Tools on — hold for per-server'
+              : 'Tools off — hold for per-server',
+          child: GestureDetector(
+            onLongPress: () => _showServerMenu(context),
+            child: IconButton(
+              icon: Icon(
+                p.mcpActive
+                    ? Icons.extension_rounded
+                    : Icons.extension_off_rounded,
+                color: p.mcpActive
+                    ? cs.primary
+                    : cs.onSurfaceVariant.withValues(alpha: 0.5),
+              ),
+              onPressed: p.toggleMcp,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ── Per-server menu entry ─────────────────────────────────────────────────────
+//
+// A PopupMenuEntry subclass (not PopupMenuItem) so the Switch widgets are
+// fully interactive — PopupMenuItem wraps its child in IgnorePointer when
+// enabled:false, which would swallow touch events.
+
+class _McpServersMenuEntry extends PopupMenuEntry<Never> {
+  final List<McpServer> servers;
+  final AppProvider provider;
+
+  const _McpServersMenuEntry({
+    required this.servers,
+    required this.provider,
+  });
+
+  // height is used by showMenu for scroll physics; approximate per-row height.
+  @override
+  double get height => servers.length * 48.0 + 36;
+
+  @override
+  bool represents(Never? value) => false;
+
+  @override
+  State<_McpServersMenuEntry> createState() => _McpServersMenuEntryState();
+}
+
+class _McpServersMenuEntryState extends State<_McpServersMenuEntry> {
+  late List<McpServer> _servers;
+
+  @override
+  void initState() {
+    super.initState();
+    _servers = List.of(widget.servers);
+  }
+
+  void _toggle(String id, bool value) {
+    setState(() {
+      final i = _servers.indexWhere((s) => s.id == id);
+      if (i >= 0) _servers[i] = _servers[i].copyWith(enabled: value);
+    });
+    // Merge back into the full server list (preserves servers not shown here).
+    final allServers = widget.provider.settings.mcpServers.map((s) {
+      try {
+        return _servers.firstWhere((u) => u.id == s.id);
+      } catch (_) {
+        return s;
+      }
+    }).toList();
+    widget.provider.saveMcpServers(List.unmodifiable(allServers));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+          child: Text(
+            'MCP Servers',
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: cs.onSurfaceVariant),
+          ),
+        ),
+        for (int i = 0; i < _servers.length; i++) ...[
+          if (i > 0)
+            Divider(
+                height: 1,
+                indent: 16,
+                endIndent: 16,
+                color: cs.outlineVariant.withValues(alpha: 0.5)),
+          SwitchListTile(
+            dense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+            title: Text(
+              _servers[i].name,
+              style: theme.textTheme.bodyMedium,
+              overflow: TextOverflow.ellipsis,
+            ),
+            value: _servers[i].enabled,
+            onChanged: (v) => _toggle(_servers[i].id, v),
+          ),
+        ],
+        const SizedBox(height: 6),
+      ],
     );
   }
 }
