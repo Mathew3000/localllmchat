@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import '../models/message.dart';
 import '../models/settings.dart';
 import '../models/tool_call.dart';
+import 'debug_logger.dart';
 
 class ApiService {
   final AppSettings settings;
@@ -52,9 +53,11 @@ class ApiService {
 
   Future<List<String>> fetchModels() async {
     final uri = Uri.parse('$_baseUrl/models');
+    DebugLogger.instance.logRequest('LLM', 'GET', uri.toString(), '');
     final response = await http
         .get(uri, headers: _headers)
         .timeout(const Duration(seconds: 10));
+    DebugLogger.instance.logResponse('LLM', uri.toString(), response.statusCode, response.body);
     if (response.statusCode != 200) {
       throw Exception('Failed to fetch models: ${response.statusCode}');
     }
@@ -67,6 +70,7 @@ class ApiService {
 
   Future<http.StreamedResponse> _openStream(String body) async {
     final uri = Uri.parse('$_baseUrl/chat/completions');
+    DebugLogger.instance.logRequest('LLM', 'POST', uri.toString(), body);
     final request = http.Request('POST', uri)
       ..headers.addAll(_headers)
       ..body = body;
@@ -75,6 +79,7 @@ class ApiService {
         .timeout(Duration(seconds: settings.requestTimeoutSeconds));
     if (resp.statusCode != 200) {
       final err = await resp.stream.bytesToString();
+      DebugLogger.instance.logResponse('LLM', uri.toString(), resp.statusCode, err);
       throw Exception('API error ${resp.statusCode}: $err');
     }
     return resp;
@@ -91,6 +96,7 @@ class ApiService {
   /// wrapped in `<think>…</think>` so the bubble widget renders them as a
   /// collapsible thinking block.
   Stream<String> streamChat(List<Message> history) async* {
+    final endpoint = '$_baseUrl/chat/completions';
     final resp = await _openStream(jsonEncode({
       'model': settings.selectedModel,
       'messages': _buildMessages(history, toolsEnabled: false),
@@ -101,36 +107,44 @@ class ApiService {
 
     bool inThinking = false;
     bool thinkingClosed = false;
+    final rawBuf = DebugLogger.instance.enabled ? StringBuffer() : null;
 
-    await for (final line in _lines(resp)) {
-      if (!line.startsWith('data: ')) continue;
-      final data = line.substring(6).trim();
-      if (data == '[DONE]') break;
-      try {
-        final json = jsonDecode(data) as Map<String, dynamic>;
-        final choices = json['choices'] as List<dynamic>;
-        if (choices.isEmpty) continue;
-        final delta = choices[0]['delta'] as Map<String, dynamic>?;
-        if (delta == null) continue;
+    try {
+      await for (final line in _lines(resp)) {
+        rawBuf?.writeln(line);
+        if (!line.startsWith('data: ')) continue;
+        final data = line.substring(6).trim();
+        if (data == '[DONE]') break;
+        try {
+          final json = jsonDecode(data) as Map<String, dynamic>;
+          final choices = json['choices'] as List<dynamic>;
+          if (choices.isEmpty) continue;
+          final delta = choices[0]['delta'] as Map<String, dynamic>?;
+          if (delta == null) continue;
 
-        final reasoning = delta['reasoning_content'] as String?;
-        final content = delta['content'] as String?;
+          final reasoning = delta['reasoning_content'] as String?;
+          final content = delta['content'] as String?;
 
-        if (reasoning != null && reasoning.isNotEmpty) {
-          if (!inThinking) {
-            yield '<think>';
-            inThinking = true;
+          if (reasoning != null && reasoning.isNotEmpty) {
+            if (!inThinking) {
+              yield '<think>';
+              inThinking = true;
+            }
+            yield reasoning;
           }
-          yield reasoning;
-        }
-        if (content != null && content.isNotEmpty) {
-          if (inThinking && !thinkingClosed) {
-            yield '</think>';
-            thinkingClosed = true;
+          if (content != null && content.isNotEmpty) {
+            if (inThinking && !thinkingClosed) {
+              yield '</think>';
+              thinkingClosed = true;
+            }
+            yield content;
           }
-          yield content;
-        }
-      } catch (_) {}
+        } catch (_) {}
+      }
+    } finally {
+      if (rawBuf != null) {
+        DebugLogger.instance.logResponse('LLM', endpoint, 200, rawBuf.toString());
+      }
     }
   }
 
@@ -149,6 +163,7 @@ class ApiService {
     List<McpToolDef> tools,
     void Function(LlmResponse) onComplete,
   ) async* {
+    final endpoint = '$_baseUrl/chat/completions';
     final resp = await _openStream(jsonEncode({
       'model': settings.selectedModel,
       'messages': _buildMessages(history, toolsEnabled: true),
@@ -167,6 +182,7 @@ class ApiService {
     final contentType = resp.headers['content-type'] ?? '';
     if (!contentType.contains('event-stream')) {
       final body = await resp.stream.bytesToString();
+      DebugLogger.instance.logResponse('LLM', endpoint, 200, body);
       String text = '';
       List<ToolCall>? toolCalls;
       try {
@@ -217,53 +233,61 @@ class ApiService {
     String? finishReason;
     bool inThinking = false;
     bool thinkingClosed = false;
+    final rawBuf = DebugLogger.instance.enabled ? StringBuffer() : null;
 
-    await for (final line in _lines(resp)) {
-      if (!line.startsWith('data: ')) continue;
-      final data = line.substring(6).trim();
-      if (data == '[DONE]') break;
-      try {
-        final json = jsonDecode(data) as Map<String, dynamic>;
-        final choices = json['choices'] as List<dynamic>;
-        if (choices.isEmpty) continue;
+    try {
+      await for (final line in _lines(resp)) {
+        rawBuf?.writeln(line);
+        if (!line.startsWith('data: ')) continue;
+        final data = line.substring(6).trim();
+        if (data == '[DONE]') break;
+        try {
+          final json = jsonDecode(data) as Map<String, dynamic>;
+          final choices = json['choices'] as List<dynamic>;
+          if (choices.isEmpty) continue;
 
-        final choice = choices[0] as Map<String, dynamic>;
-        finishReason = choice['finish_reason'] as String? ?? finishReason;
-        final delta = choice['delta'] as Map<String, dynamic>?;
-        if (delta == null) continue;
+          final choice = choices[0] as Map<String, dynamic>;
+          finishReason = choice['finish_reason'] as String? ?? finishReason;
+          final delta = choice['delta'] as Map<String, dynamic>?;
+          if (delta == null) continue;
 
-        // Thinking tokens (Qwen3 / reasoning models) — wrap in <think> tags
-        final reasoning = delta['reasoning_content'] as String?;
-        if (reasoning != null && reasoning.isNotEmpty) {
-          if (!inThinking) {
-            yield '<think>';
-            inThinking = true;
+          // Thinking tokens (Qwen3 / reasoning models) — wrap in <think> tags
+          final reasoning = delta['reasoning_content'] as String?;
+          if (reasoning != null && reasoning.isNotEmpty) {
+            if (!inThinking) {
+              yield '<think>';
+              inThinking = true;
+            }
+            yield reasoning;
           }
-          yield reasoning;
-        }
 
-        // Actual response content — close any open think block first
-        final content = delta['content'] as String?;
-        if (content != null && content.isNotEmpty) {
-          if (inThinking && !thinkingClosed) {
-            yield '</think>';
-            thinkingClosed = true;
+          // Actual response content — close any open think block first
+          final content = delta['content'] as String?;
+          if (content != null && content.isNotEmpty) {
+            if (inThinking && !thinkingClosed) {
+              yield '</think>';
+              thinkingClosed = true;
+            }
+            contentBuf.write(content);
+            yield content;
           }
-          contentBuf.write(content);
-          yield content;
-        }
 
-        // Tool-call deltas — accumulate incrementally
-        final rawCalls = delta['tool_calls'] as List<dynamic>?;
-        if (rawCalls != null) {
-          for (final raw in rawCalls) {
-            final c = raw as Map<String, dynamic>;
-            final idx = c['index'] as int;
-            builders.putIfAbsent(idx, _ToolCallBuilder.new);
-            builders[idx]!.update(c);
+          // Tool-call deltas — accumulate incrementally
+          final rawCalls = delta['tool_calls'] as List<dynamic>?;
+          if (rawCalls != null) {
+            for (final raw in rawCalls) {
+              final c = raw as Map<String, dynamic>;
+              final idx = c['index'] as int;
+              builders.putIfAbsent(idx, _ToolCallBuilder.new);
+              builders[idx]!.update(c);
+            }
           }
-        }
-      } catch (_) {}
+        } catch (_) {}
+      }
+    } finally {
+      if (rawBuf != null) {
+        DebugLogger.instance.logResponse('LLM', endpoint, 200, rawBuf.toString());
+      }
     }
 
     // Deliver the complete response via callback (runs before stream closes).

@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import '../services/backup_crypto.dart';
+import '../services/debug_logger.dart';
 import '../services/sync_service.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -83,6 +85,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         syncAccessToken: s.syncAccessToken,
         syncRefreshToken: s.syncRefreshToken,
         syncLastAt: s.syncLastAt,
+        debugLogging: s.debugLogging,
+        debugLogPath: s.debugLogPath,
       ),
     );
     if (mounted) {
@@ -334,6 +338,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Backup & Restore'),
           const _BackupCard(),
+          const SizedBox(height: 16),
+          const _SectionHeader(title: 'Debug'),
+          const _DebugCard(),
           const SizedBox(height: 48),
           Center(
             child: Text(
@@ -1788,6 +1795,191 @@ class _BackupCard extends StatelessWidget {
   }
 
   String _p(int n) => n.toString().padLeft(2, '0');
+}
+
+// ── Debug card ────────────────────────────────────────────────────────────────
+
+class _DebugCard extends StatefulWidget {
+  const _DebugCard();
+
+  @override
+  State<_DebugCard> createState() => _DebugCardState();
+}
+
+class _DebugCardState extends State<_DebugCard> {
+  bool _busy = false;
+
+  Future<String?> _pickFolder() async {
+    if (Platform.isAndroid) {
+      // On Android let file_picker resolve a writable directory via SAF.
+      return FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select debug log folder',
+      );
+    } else {
+      return FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select debug log folder',
+      );
+    }
+  }
+
+  Future<void> _toggle(AppProvider provider, bool enabled) async {
+    if (enabled) {
+      final current = provider.settings.debugLogPath;
+      final path = current.isNotEmpty ? current : await _pickFolder();
+      if (path == null || path.isEmpty) return; // user cancelled
+      await _apply(provider, enabled: true, path: path);
+    } else {
+      await _apply(provider, enabled: false, path: provider.settings.debugLogPath);
+    }
+  }
+
+  Future<void> _changeFolder(AppProvider provider) async {
+    final path = await _pickFolder();
+    if (path == null || path.isEmpty) return;
+    await _apply(provider, enabled: provider.settings.debugLogging, path: path);
+  }
+
+  Future<void> _apply(AppProvider provider,
+      {required bool enabled, required String path}) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await provider.saveDebugSettings(enabled: enabled, path: path);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppProvider>(
+      builder: (context, provider, _) {
+        final theme = Theme.of(context);
+        final cs = theme.colorScheme;
+        final s = provider.settings;
+        final logFile = DebugLogger.instance.currentFile;
+
+        return _SettingsCard(
+          children: [
+            // ── Warning banner ──────────────────────────────────────────────
+            if (s.debugLogging)
+              Container(
+                margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: cs.errorContainer.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.warning_amber_rounded,
+                        size: 16, color: cs.error),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Logs contain all message content, API keys, MCP '
+                        'auth headers, and tokens in plain text. '
+                        'Disable when not debugging.',
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: cs.onErrorContainer),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // ── Toggle ──────────────────────────────────────────────────────
+            SwitchListTile(
+              title: const Text('Debug logging'),
+              subtitle: Text(
+                'Write raw HTTP traffic to a log file',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+              value: s.debugLogging,
+              onChanged: _busy ? null : (v) => _toggle(provider, v),
+            ),
+
+            // ── Folder + active file (only when enabled) ─────────────────────
+            if (s.debugLogging) ...[
+              const Divider(height: 1),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Folder row
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Log folder',
+                                style: theme.textTheme.labelSmall
+                                    ?.copyWith(color: cs.onSurfaceVariant),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                s.debugLogPath.isEmpty ? '—' : s.debugLogPath,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  fontFamily: 'monospace',
+                                  color: s.debugLogPath.isEmpty
+                                      ? cs.error
+                                      : cs.onSurface,
+                                ),
+                                maxLines: 3,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          onPressed:
+                              _busy ? null : () => _changeFolder(provider),
+                          style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                          ),
+                          child: const Text('Change'),
+                        ),
+                      ],
+                    ),
+
+                    // Active log file
+                    if (logFile != null) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(Icons.fiber_manual_record_rounded,
+                              size: 8, color: cs.primary),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              logFile,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: cs.primary,
+                                fontFamily: 'monospace',
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
 }
 
 // ── Password prompt dialog ────────────────────────────────────────────────────

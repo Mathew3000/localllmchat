@@ -35,6 +35,14 @@ class AppSettings {
   /// ISO-8601 timestamp of last successful sync. Null = never synced.
   final String syncLastAt;
 
+  // ── Debug settings ─────────────────────────────────────────────────────────
+  /// When true, all raw HTTP traffic is written to [debugLogPath].
+  /// Excluded from sync — this is a per-device developer setting.
+  final bool debugLogging;
+
+  /// Folder path where debug log files are written. Empty = not configured.
+  final String debugLogPath;
+
   const AppSettings({
     this.baseUrlHome = 'http://192.168.1.1:5000/v1',
     this.baseUrlAway = '',
@@ -56,6 +64,8 @@ class AppSettings {
     this.syncAccessToken = '',
     this.syncRefreshToken = '',
     this.syncLastAt = '',
+    this.debugLogging = false,
+    this.debugLogPath = '',
   });
 
   /// The URL that is currently active based on [useAwayUrl].
@@ -88,6 +98,8 @@ class AppSettings {
     String? syncAccessToken,
     String? syncRefreshToken,
     String? syncLastAt,
+    bool? debugLogging,
+    String? debugLogPath,
   }) =>
       AppSettings(
         baseUrlHome: baseUrlHome ?? this.baseUrlHome,
@@ -117,6 +129,8 @@ class AppSettings {
         syncAccessToken: syncAccessToken ?? this.syncAccessToken,
         syncRefreshToken: syncRefreshToken ?? this.syncRefreshToken,
         syncLastAt: syncLastAt ?? this.syncLastAt,
+        debugLogging: debugLogging ?? this.debugLogging,
+        debugLogPath: debugLogPath ?? this.debugLogPath,
       );
 
   Map<String, dynamic> toJson() => {
@@ -139,15 +153,20 @@ class AppSettings {
         'syncAccessToken': syncAccessToken,
         'syncRefreshToken': syncRefreshToken,
         'syncLastAt': syncLastAt,
+        'debugLogging': debugLogging,
+        'debugLogPath': debugLogPath,
       };
 
   /// Settings JSON for the sync payload — excludes device-specific credentials
   /// so tokens and last-sync timestamps are not overwritten on other devices.
   Map<String, dynamic> toSyncJson() {
     final j = toJson();
+    // Exclude device-specific fields that should not overwrite other devices.
     j.remove('syncAccessToken');
     j.remove('syncRefreshToken');
     j.remove('syncLastAt');
+    j.remove('debugLogging');
+    j.remove('debugLogPath');
     return j;
   }
 
@@ -192,6 +211,8 @@ class AppSettings {
       syncAccessToken: json['syncAccessToken'] as String? ?? '',
       syncRefreshToken: json['syncRefreshToken'] as String? ?? '',
       syncLastAt: json['syncLastAt'] as String? ?? '',
+      debugLogging: json['debugLogging'] as bool? ?? false,
+      debugLogPath: json['debugLogPath'] as String? ?? '',
     );
   }
 }

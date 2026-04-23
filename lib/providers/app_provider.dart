@@ -16,6 +16,7 @@ import '../services/mcp_sse_service.dart';
 import '../services/storage_service.dart';
 import '../services/streaming_keep_alive.dart';
 import '../services/sync_service.dart';
+import '../services/debug_logger.dart';
 
 class AppProvider extends ChangeNotifier {
   final StorageService _storage = StorageService();
@@ -145,6 +146,11 @@ class AppProvider extends ChangeNotifier {
 
   Future<void> _init() async {
     _settings = await _storage.loadSettings();
+    // Start debug logger early so first requests are captured.
+    await DebugLogger.instance.init(
+      enabled: _settings.debugLogging,
+      folderPath: _settings.debugLogPath,
+    );
     _conversations = await _storage.loadConversations();
     if (_conversations.isNotEmpty) {
       _activeConversation = _conversations.firstWhere(
@@ -247,9 +253,13 @@ class AppProvider extends ChangeNotifier {
       }
     }
     cached?.dispose();
+    // Look up the server name for the debug log tag.
+    final serverName = _settings.mcpServers
+        .firstWhere((s) => s.id == serverId, orElse: () => McpServer(name: serverId))
+        .name;
     return type == McpTransport.sse
-        ? McpSseService(url, extraHeaders: headers)
-        : McpService(url, extraHeaders: headers);
+        ? McpSseService(url, extraHeaders: headers, tag: serverName)
+        : McpService(url, extraHeaders: headers, tag: serverName);
   }
 
   /// For [McpTransport.auto]: tries Streamable-HTTP first; on 404/405 falls
@@ -268,9 +278,14 @@ class AppProvider extends ChangeNotifier {
       }
     }
 
+    // Look up the server name for the debug log tag.
+    final serverName = _settings.mcpServers
+        .firstWhere((s) => s.id == serverId, orElse: () => McpServer(name: serverId))
+        .name;
+
     // Try Streamable-HTTP.
     try {
-      final svc = McpService(url, extraHeaders: headers);
+      final svc = McpService(url, extraHeaders: headers, tag: serverName);
       final tools = await svc.listTools();
       return (svc, tools);
     } on McpHttpException catch (e) {
@@ -279,7 +294,7 @@ class AppProvider extends ChangeNotifier {
     }
 
     // Fall back to HTTP+SSE.
-    final svc = McpSseService(url, extraHeaders: headers);
+    final svc = McpSseService(url, extraHeaders: headers, tag: serverName);
     final tools = await svc.listTools();
     return (svc, tools);
   }
@@ -512,6 +527,19 @@ class AppProvider extends ChangeNotifier {
     await _storage.saveSettings(_settings);
     _availableModels = [];
     _lastNetworkCheck = null;
+    notifyListeners();
+  }
+
+  /// Save only the debug logging settings without resetting the model list or
+  /// network state — avoids disruptive side-effects when toggling from the
+  /// Settings screen while other fields are in progress.
+  Future<void> saveDebugSettings({
+    required bool enabled,
+    required String path,
+  }) async {
+    _settings = _settings.copyWith(debugLogging: enabled, debugLogPath: path);
+    await _storage.saveSettings(_settings);
+    await DebugLogger.instance.init(enabled: enabled, folderPath: path);
     notifyListeners();
   }
 

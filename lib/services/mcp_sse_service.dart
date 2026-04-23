@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/tool_call.dart';
 import 'base_mcp_service.dart';
+import 'debug_logger.dart';
 
 /// HTTP+SSE transport client (legacy MCP transport, used by many servers
 /// built before the Streamable-HTTP spec, e.g. mcp-server-fetch, npx-based
@@ -20,8 +21,12 @@ class McpSseService extends BaseMcpService {
   /// Extra headers injected into every HTTP request (e.g. auth tokens).
   final Map<String, String> extraHeaders;
 
-  McpSseService(this.baseUrl, {Map<String, String>? extraHeaders})
-      : extraHeaders = extraHeaders ?? const {};
+  /// Label used in debug log entries to identify this server.
+  final String tag;
+
+  McpSseService(this.baseUrl, {Map<String, String>? extraHeaders, String? tag})
+      : extraHeaders = extraHeaders ?? const {},
+        tag = tag != null ? 'MCP-SSE[$tag]' : 'MCP-SSE';
 
   final http.Client _client = http.Client();
 
@@ -91,11 +96,14 @@ class McpSseService extends BaseMcpService {
     // Inject auth headers (after protocol headers so they can override).
     extraHeaders.forEach((k, v) => request.headers[k] = v);
 
+    DebugLogger.instance.logRequest(tag, 'GET (SSE)', _sseUrl, '');
+
     final response =
         await _client.send(request).timeout(const Duration(seconds: 10));
 
     if (response.statusCode != 200) {
       final body = await response.stream.bytesToString();
+      DebugLogger.instance.logError(tag, _sseUrl, 'SSE connect HTTP ${response.statusCode}: $body');
       throw McpHttpException(response.statusCode, body);
     }
 
@@ -224,24 +232,30 @@ class McpSseService extends BaseMcpService {
     final completer = Completer<Map<String, dynamic>>();
     _pending[id] = completer;
 
+    final reqBody = jsonEncode(
+        {'jsonrpc': '2.0', 'id': id, 'method': method, 'params': params});
+    DebugLogger.instance.logRequest(tag, 'POST', _postEndpoint!, reqBody);
+
     final resp = await _client
         .post(
           Uri.parse(_postEndpoint!),
           headers: {'Content-Type': 'application/json', ...extraHeaders},
-          body: jsonEncode(
-              {'jsonrpc': '2.0', 'id': id, 'method': method, 'params': params}),
+          body: reqBody,
         )
         .timeout(const Duration(seconds: 10));
 
     // 200 (with body) or 202 (accepted, response arrives via SSE) are both ok.
     if (resp.statusCode != 200 && resp.statusCode != 202) {
       _pending.remove(id);
+      DebugLogger.instance.logError(tag, _postEndpoint!, 'HTTP ${resp.statusCode}: ${resp.body}');
       throw McpHttpException(resp.statusCode, resp.body);
     }
 
     // Wait for the matching response event to arrive on the SSE stream.
     final result =
         await completer.future.timeout(const Duration(seconds: 30));
+
+    DebugLogger.instance.logResponse(tag, _postEndpoint!, 200, jsonEncode(result));
 
     if (result['error'] != null) {
       throw Exception('MCP error: ${result['error']}');
