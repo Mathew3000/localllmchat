@@ -31,6 +31,10 @@ class AppProvider extends ChangeNotifier {
   StreamSubscription<String>? _streamSub;
   bool _isStreaming = false;
 
+  // ── Message queue ─────────────────────────────────────────────────────────
+  /// Messages waiting to be sent once the current run finishes.
+  final List<String> _messageQueue = [];
+
   bool _secretsUnlocked = false;
 
   // ── Sync ──────────────────────────────────────────────────────────────────
@@ -77,6 +81,7 @@ class AppProvider extends ChangeNotifier {
   List<String> get availableModels => _availableModels;
   bool get fetchingModels => _fetchingModels;
   bool get isStreaming => _isStreaming;
+  List<String> get messageQueue => List.unmodifiable(_messageQueue);
   bool get secretsUnlocked => _secretsUnlocked;
   bool get hasSecretPassword => _settings.secretPasswordHash.isNotEmpty;
   bool get usingAwayUrl => _usingAway;
@@ -598,8 +603,42 @@ class AppProvider extends ChangeNotifier {
 
   // ── Chat ──────────────────────────────────────────────────────────────────
 
+  /// Adds [text] to the queue without starting a new run.
+  void enqueueMessage(String text) {
+    final t = text.trim();
+    if (t.isEmpty) return;
+    _messageQueue.add(t);
+    notifyListeners();
+  }
+
+  void removeFromQueue(int index) {
+    if (index >= 0 && index < _messageQueue.length) {
+      _messageQueue.removeAt(index);
+      notifyListeners();
+    }
+  }
+
+  void clearQueue() {
+    _messageQueue.clear();
+    notifyListeners();
+  }
+
+  /// Pops the next queued message and sends it, if any.
+  /// Called automatically at the end of each completed run.
+  Future<void> _processNextInQueue() async {
+    if (_messageQueue.isEmpty) return;
+    final next = _messageQueue.removeAt(0);
+    notifyListeners();
+    await sendMessage(next);
+  }
+
   Future<void> sendMessage(String content) async {
-    if (content.trim().isEmpty || _isStreaming) return;
+    if (content.trim().isEmpty) return;
+    // If a run is already in progress, park the message in the queue.
+    if (_isStreaming) {
+      enqueueMessage(content);
+      return;
+    }
 
     if (_activeConversation == null) newConversation();
 
@@ -655,6 +694,7 @@ class AppProvider extends ChangeNotifier {
           StreamingKeepAlive.stop();
           _persistConversations();
           notifyListeners();
+          _processNextInQueue();
         },
         onError: (Object e) {
           assistantMsg.isStreaming = false;
@@ -666,6 +706,7 @@ class AppProvider extends ChangeNotifier {
           StreamingKeepAlive.stop();
           _persistConversations();
           notifyListeners();
+          _processNextInQueue();
         },
         cancelOnError: true,
       );
@@ -790,10 +831,12 @@ class AppProvider extends ChangeNotifier {
       StreamingKeepAlive.stop();
       _persistConversations();
       notifyListeners();
+      _processNextInQueue();
     }
   }
 
   Future<void> cancelStream() async {
+    _messageQueue.clear();
     await _streamSub?.cancel();
     _streamSub = null;
     if (_activeConversation != null) {

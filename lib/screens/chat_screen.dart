@@ -181,6 +181,9 @@ class _ChatScreenState extends State<ChatScreen> {
               _scrollToBottom();
             },
             onCancel: p.cancelStream,
+            messageQueue: p.messageQueue,
+            onRemoveFromQueue: p.removeFromQueue,
+            onClearQueue: p.clearQueue,
           ),
         ),
       ],
