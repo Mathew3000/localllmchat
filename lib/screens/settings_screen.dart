@@ -85,6 +85,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         syncAccessToken: s.syncAccessToken,
         syncRefreshToken: s.syncRefreshToken,
         syncLastAt: s.syncLastAt,
+        autoSyncEnabled: s.autoSyncEnabled,
+        autoSyncIntervalMinutes: s.autoSyncIntervalMinutes,
         debugLogging: s.debugLogging,
         debugLogPath: s.debugLogPath,
       ),
@@ -1254,6 +1256,62 @@ class _SyncCard extends StatelessWidget {
                   ),
                 ),
               ],
+              // ── Auto-sync controls (only when logged in) ─────────────────
+              if (ready) ...[
+                const Divider(height: 1),
+                SwitchListTile(
+                  secondary: const Icon(Icons.sync_outlined),
+                  title: const Text('Auto-sync'),
+                  subtitle: Text(
+                    s.autoSyncEnabled
+                        ? 'Every ${_formatInterval(s.autoSyncIntervalMinutes)}'
+                        : 'Sync automatically in the background',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  value: s.autoSyncEnabled,
+                  onChanged: (v) => provider.saveAutoSyncSettings(
+                    enabled: v,
+                    intervalMinutes: s.autoSyncIntervalMinutes,
+                  ),
+                ),
+                if (s.autoSyncEnabled) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Interval',
+                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                        ),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [5, 10, 15, 30, 60, 120].map((mins) {
+                            final selected =
+                                s.autoSyncIntervalMinutes == mins;
+                            return ChoiceChip(
+                              label: Text(_formatInterval(mins)),
+                              selected: selected,
+                              onSelected: (_) =>
+                                  provider.saveAutoSyncSettings(
+                                enabled: true,
+                                intervalMinutes: mins,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                            );
+                          }).toList(),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
               const Divider(height: 1),
               // Action row
               OverflowBar(
@@ -1289,6 +1347,13 @@ class _SyncCard extends StatelessWidget {
         );
       },
     );
+  }
+
+  String _formatInterval(int minutes) {
+    if (minutes < 60) return '${minutes}m';
+    final h = minutes ~/ 60;
+    final m = minutes % 60;
+    return m == 0 ? '${h}h' : '${h}h ${m}m';
   }
 
   String _formatSyncTime(String iso) {

@@ -45,6 +45,10 @@ class AppProvider extends ChangeNotifier {
   SyncStatus _syncStatus = SyncStatus.idle;
   String? _syncError;
 
+  /// Periodic timer that fires [syncNow] automatically. Null = disabled or
+  /// not started yet (e.g. sync key not loaded).
+  Timer? _autoSyncTimer;
+
   // ── Network auto-detection (LLM server) ──────────────────────────────────
 
   bool _usingAway = false;
@@ -165,6 +169,7 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
     _autoDetectUrl();
     _fetchAllMcpTools();
+    _startAutoSync();
   }
 
   // ── Network auto-detect (LLM server) ─────────────────────────────────────
@@ -532,6 +537,7 @@ class AppProvider extends ChangeNotifier {
     await _storage.saveSettings(_settings);
     _availableModels = [];
     _lastNetworkCheck = null;
+    _startAutoSync(); // restart in case interval or enabled flag changed
     notifyListeners();
   }
 
@@ -853,6 +859,40 @@ class AppProvider extends ChangeNotifier {
   Future<void> _persistConversations() =>
       _storage.saveConversations(_conversations);
 
+  // ── Auto-sync timer ───────────────────────────────────────────────────────
+
+  /// Starts (or restarts) the periodic auto-sync timer using the current
+  /// settings.  No-op when auto-sync is disabled or the sync key is not loaded.
+  void _startAutoSync() {
+    _stopAutoSync();
+    if (!_settings.autoSyncEnabled || !syncReady) return;
+    final interval = Duration(minutes: _settings.autoSyncIntervalMinutes);
+    _autoSyncTimer = Timer.periodic(interval, (_) {
+      if (syncReady && _syncStatus != SyncStatus.syncing) {
+        syncNow().catchError((_) {});
+      }
+    });
+  }
+
+  void _stopAutoSync() {
+    _autoSyncTimer?.cancel();
+    _autoSyncTimer = null;
+  }
+
+  /// Persists auto-sync settings and restarts the timer immediately.
+  Future<void> saveAutoSyncSettings({
+    required bool enabled,
+    required int intervalMinutes,
+  }) async {
+    _settings = _settings.copyWith(
+      autoSyncEnabled: enabled,
+      autoSyncIntervalMinutes: intervalMinutes,
+    );
+    await _storage.saveSettings(_settings);
+    _startAutoSync();
+    notifyListeners();
+  }
+
   // ── Sync ──────────────────────────────────────────────────────────────────
 
   /// Registers a new sync account. Derives both the auth hash and the in-memory
@@ -870,6 +910,7 @@ class AppProvider extends ChangeNotifier {
       syncRefreshToken: result.refreshToken,
     );
     await _storage.saveSettings(_settings);
+    _startAutoSync();
     notifyListeners();
   }
 
@@ -887,11 +928,13 @@ class AppProvider extends ChangeNotifier {
       syncRefreshToken: result.refreshToken,
     );
     await _storage.saveSettings(_settings);
+    _startAutoSync();
     notifyListeners();
   }
 
   /// Removes all sync credentials and clears the in-memory key.
   Future<void> syncLogout() async {
+    _stopAutoSync();
     _syncKey = null;
     _settings = _settings.copyWith(
       syncUrl: '',

@@ -35,6 +35,14 @@ class AppSettings {
   /// ISO-8601 timestamp of last successful sync. Null = never synced.
   final String syncLastAt;
 
+  // ── Auto-sync settings ────────────────────────────────────────────────────
+  /// When true a periodic timer triggers sync automatically.
+  /// Device-local — excluded from sync payload.
+  final bool autoSyncEnabled;
+
+  /// How often auto-sync fires, in minutes.
+  final int autoSyncIntervalMinutes;
+
   // ── Debug settings ─────────────────────────────────────────────────────────
   /// When true, all raw HTTP traffic is written to [debugLogPath].
   /// Excluded from sync — this is a per-device developer setting.
@@ -64,6 +72,8 @@ class AppSettings {
     this.syncAccessToken = '',
     this.syncRefreshToken = '',
     this.syncLastAt = '',
+    this.autoSyncEnabled = false,
+    this.autoSyncIntervalMinutes = 30,
     this.debugLogging = false,
     this.debugLogPath = '',
   });
@@ -98,6 +108,8 @@ class AppSettings {
     String? syncAccessToken,
     String? syncRefreshToken,
     String? syncLastAt,
+    bool? autoSyncEnabled,
+    int? autoSyncIntervalMinutes,
     bool? debugLogging,
     String? debugLogPath,
   }) =>
@@ -129,6 +141,8 @@ class AppSettings {
         syncAccessToken: syncAccessToken ?? this.syncAccessToken,
         syncRefreshToken: syncRefreshToken ?? this.syncRefreshToken,
         syncLastAt: syncLastAt ?? this.syncLastAt,
+        autoSyncEnabled: autoSyncEnabled ?? this.autoSyncEnabled,
+        autoSyncIntervalMinutes: autoSyncIntervalMinutes ?? this.autoSyncIntervalMinutes,
         debugLogging: debugLogging ?? this.debugLogging,
         debugLogPath: debugLogPath ?? this.debugLogPath,
       );
@@ -153,6 +167,8 @@ class AppSettings {
         'syncAccessToken': syncAccessToken,
         'syncRefreshToken': syncRefreshToken,
         'syncLastAt': syncLastAt,
+        'autoSyncEnabled': autoSyncEnabled,
+        'autoSyncIntervalMinutes': autoSyncIntervalMinutes,
         'debugLogging': debugLogging,
         'debugLogPath': debugLogPath,
       };
@@ -165,6 +181,8 @@ class AppSettings {
     j.remove('syncAccessToken');
     j.remove('syncRefreshToken');
     j.remove('syncLastAt');
+    j.remove('autoSyncEnabled');
+    j.remove('autoSyncIntervalMinutes');
     j.remove('debugLogging');
     j.remove('debugLogPath');
     return j;
@@ -211,6 +229,8 @@ class AppSettings {
       syncAccessToken: json['syncAccessToken'] as String? ?? '',
       syncRefreshToken: json['syncRefreshToken'] as String? ?? '',
       syncLastAt: json['syncLastAt'] as String? ?? '',
+      autoSyncEnabled: json['autoSyncEnabled'] as bool? ?? false,
+      autoSyncIntervalMinutes: json['autoSyncIntervalMinutes'] as int? ?? 30,
       debugLogging: json['debugLogging'] as bool? ?? false,
       debugLogPath: json['debugLogPath'] as String? ?? '',
     );
