@@ -59,6 +59,19 @@ class AppSettings {
   /// Folder path where debug log files are written. Empty = not configured.
   final String debugLogPath;
 
+  // ── Backend generation server ──────────────────────────────────────────────
+  /// When true, all generation goes through the backend server instead of
+  /// calling the LLM API directly.  Device-local — excluded from sync.
+  final bool useBackend;
+  /// Base URL of the backend server, e.g. https://192.168.1.50
+  /// Device-local — excluded from sync.
+  final String backendUrl;
+  /// JWT access token for the backend server.  Device-local — excluded from sync.
+  final String backendToken;
+  /// When true, TLS certificate errors are ignored (for self-signed LAN certs).
+  /// Device-local — excluded from sync.
+  final bool backendAllowSelfSigned;
+
   const AppSettings({
     this.baseUrlHome = 'http://192.168.1.1:5000/v1',
     this.baseUrlAway = '',
@@ -86,6 +99,10 @@ class AppSettings {
     this.injectDateTime = false,
     this.debugLogging = false,
     this.debugLogPath = '',
+    this.useBackend = false,
+    this.backendUrl = '',
+    this.backendToken = '',
+    this.backendAllowSelfSigned = false,
   });
 
   /// The URL that is currently active based on [useAwayUrl].
@@ -124,6 +141,10 @@ class AppSettings {
     bool? injectDateTime,
     bool? debugLogging,
     String? debugLogPath,
+    bool? useBackend,
+    String? backendUrl,
+    String? backendToken,
+    bool? backendAllowSelfSigned,
   }) =>
       AppSettings(
         baseUrlHome: baseUrlHome ?? this.baseUrlHome,
@@ -161,6 +182,11 @@ class AppSettings {
         injectDateTime: injectDateTime ?? this.injectDateTime,
         debugLogging: debugLogging ?? this.debugLogging,
         debugLogPath: debugLogPath ?? this.debugLogPath,
+        useBackend: useBackend ?? this.useBackend,
+        backendUrl: backendUrl ?? this.backendUrl,
+        backendToken: backendToken ?? this.backendToken,
+        backendAllowSelfSigned:
+            backendAllowSelfSigned ?? this.backendAllowSelfSigned,
       );
 
   Map<String, dynamic> toJson() => {
@@ -189,6 +215,10 @@ class AppSettings {
         'injectDateTime': injectDateTime,
         'debugLogging': debugLogging,
         'debugLogPath': debugLogPath,
+        'useBackend': useBackend,
+        'backendUrl': backendUrl,
+        'backendToken': backendToken,
+        'backendAllowSelfSigned': backendAllowSelfSigned,
       };
 
   /// Settings JSON for the sync payload — excludes device-specific credentials
@@ -203,6 +233,11 @@ class AppSettings {
     j.remove('autoSyncIntervalMinutes');
     j.remove('debugLogging');
     j.remove('debugLogPath');
+    // Backend credentials are device-local — never sync them.
+    j.remove('useBackend');
+    j.remove('backendUrl');
+    j.remove('backendToken');
+    j.remove('backendAllowSelfSigned');
     return j;
   }
 
@@ -253,6 +288,11 @@ class AppSettings {
       injectDateTime: json['injectDateTime'] as bool? ?? false,
       debugLogging: json['debugLogging'] as bool? ?? false,
       debugLogPath: json['debugLogPath'] as String? ?? '',
+      useBackend: json['useBackend'] as bool? ?? false,
+      backendUrl: json['backendUrl'] as String? ?? '',
+      backendToken: json['backendToken'] as String? ?? '',
+      backendAllowSelfSigned:
+          json['backendAllowSelfSigned'] as bool? ?? false,
     );
   }
 }

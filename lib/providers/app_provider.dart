@@ -10,6 +10,7 @@ import '../models/message.dart';
 import '../models/settings.dart';
 import '../models/tool_call.dart';
 import '../services/api_service.dart';
+import '../services/backend_service.dart';
 import '../services/base_mcp_service.dart';
 import '../services/mcp_service.dart';
 import '../services/mcp_sse_service.dart';
@@ -40,6 +41,15 @@ class AppProvider extends ChangeNotifier {
   bool _fetchingModels = false;
   StreamSubscription<String>? _streamSub;
   bool _isStreaming = false;
+
+  // ── Backend generation ────────────────────────────────────────────────────
+  BackendService? _backend;
+  StreamSubscription<BackendEvent>? _backendEventSub;
+  /// The assistant message currently being streamed from the backend.
+  Message? _streamingBackendMsg;
+  String? _streamingBackendConvId;
+  bool _backendConnecting = false;
+  String? _backendConnectError;
 
   // ── Message queue ─────────────────────────────────────────────────────────
   /// Messages waiting to be sent once the current run finishes.
@@ -102,6 +112,13 @@ class AppProvider extends ChangeNotifier {
   bool get hasSecretPassword => _settings.secretPasswordHash.isNotEmpty;
   bool get usingAwayUrl => _usingAway;
   bool get mcpActive => _mcpActive;
+
+  // Backend getters
+  bool get backendConnecting => _backendConnecting;
+  String? get backendConnectError => _backendConnectError;
+  bool get backendConnected => _backend?.isConnected ?? false;
+  bool get backendConfigured =>
+      _settings.backendUrl.isNotEmpty && _settings.backendToken.isNotEmpty;
 
   // Sync getters
   /// True when sync credentials are stored (server URL + tokens configured).
@@ -182,6 +199,9 @@ class AppProvider extends ChangeNotifier {
     _autoDetectUrl();
     _fetchAllMcpTools();
     _startAutoSync();
+    if (_settings.useBackend && _settings.backendToken.isNotEmpty) {
+      _connectBackend();
+    }
   }
 
   // ── Network auto-detect (LLM server) ─────────────────────────────────────
@@ -566,14 +586,128 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Backend server ────────────────────────────────────────────────────────
+
+  Future<void> _connectBackend() async {
+    if (_backendConnecting) return;
+    _backendConnecting = true;
+    _backendConnectError = null;
+    notifyListeners();
+
+    try {
+      _backend?.dispose();
+      _backend = BackendService(
+        baseUrl: _settings.backendUrl,
+        token: _settings.backendToken,
+        allowSelfSigned: _settings.backendAllowSelfSigned,
+      );
+
+      await _backend!.connect();
+
+      _backendEventSub?.cancel();
+      _backendEventSub = _backend!.events.listen(_handleBackendEvent);
+
+      // Load conversations from the backend
+      final convs = await _backend!.fetchConversations();
+      _conversations = convs;
+      _activeConversation = convs.isNotEmpty ? convs.first : null;
+    } catch (e) {
+      _backendConnectError = e.toString();
+      _backend?.dispose();
+      _backend = null;
+    } finally {
+      _backendConnecting = false;
+      notifyListeners();
+    }
+  }
+
+  void _disconnectBackend() {
+    _backendEventSub?.cancel();
+    _backendEventSub = null;
+    _backend?.dispose();
+    _backend = null;
+    _streamingBackendMsg = null;
+    _streamingBackendConvId = null;
+  }
+
+  /// Login to the backend server and connect.
+  Future<void> backendLogin(
+    String url,
+    String username,
+    String password,
+  ) async {
+    final token = await BackendService.loginStatic(
+      url,
+      username,
+      password,
+      allowSelfSigned: _settings.backendAllowSelfSigned,
+    );
+    _settings = _settings.copyWith(
+      backendUrl: url,
+      backendToken: token,
+      useBackend: true,
+    );
+    await _storage.saveSettings(_settings);
+    await _connectBackend();
+  }
+
+  /// Register a new account on the backend server and connect.
+  Future<void> backendRegister(
+    String url,
+    String username,
+    String password,
+  ) async {
+    final token = await BackendService.registerStatic(
+      url,
+      username,
+      password,
+      allowSelfSigned: _settings.backendAllowSelfSigned,
+    );
+    _settings = _settings.copyWith(
+      backendUrl: url,
+      backendToken: token,
+      useBackend: true,
+    );
+    await _storage.saveSettings(_settings);
+    await _connectBackend();
+  }
+
+  /// Disconnect from the backend and switch back to direct LLM mode.
+  Future<void> backendLogout() async {
+    _disconnectBackend();
+    _settings = _settings.copyWith(
+      useBackend: false,
+      backendToken: '',
+    );
+    await _storage.saveSettings(_settings);
+    // Reload local conversations
+    _conversations = await _storage.loadConversations();
+    _activeConversation = _conversations.isNotEmpty
+        ? _conversations.firstWhere((c) => !c.isSecret,
+            orElse: () => _conversations.first)
+        : null;
+    notifyListeners();
+  }
+
+  /// Update the backendAllowSelfSigned flag immediately (no Save needed).
+  Future<void> setBackendAllowSelfSigned(bool value) async {
+    _settings = _settings.copyWith(backendAllowSelfSigned: value);
+    await _storage.saveSettings(_settings);
+    notifyListeners();
+  }
+
   Future<void> fetchModels() async {
     _fetchingModels = true;
     _error = null;
     notifyListeners();
     try {
-      await _autoDetectUrl();
-      _availableModels =
-          await ApiService(_settings, activeBaseUrl).fetchModels();
+      if (_settings.useBackend && _backend != null) {
+        _availableModels = await _backend!.fetchModels();
+      } else {
+        await _autoDetectUrl();
+        _availableModels =
+            await ApiService(_settings, activeBaseUrl).fetchModels();
+      }
       if (_availableModels.isNotEmpty &&
           !_availableModels.contains(_settings.selectedModel)) {
         _settings =
@@ -590,17 +724,44 @@ class AppProvider extends ChangeNotifier {
 
   // ── Conversations ─────────────────────────────────────────────────────────
 
-  void newConversation() {
-    final conv = Conversation();
-    _conversations.insert(0, conv);
-    _activeConversation = conv;
-    _persistConversations();
+  Future<void> newConversation() async {
+    if (_settings.useBackend && _backend != null) {
+      try {
+        final conv = await _backend!.createConversation();
+        _conversations.insert(0, conv);
+        _activeConversation = conv;
+      } catch (e) {
+        _error = 'Failed to create conversation: $e';
+      }
+    } else {
+      final conv = Conversation();
+      _conversations.insert(0, conv);
+      _activeConversation = conv;
+      _persistConversations();
+    }
     notifyListeners();
   }
 
   void selectConversation(Conversation conv) {
     _activeConversation = conv;
     notifyListeners();
+    // In backend mode, lazy-load messages if not yet fetched.
+    if (_settings.useBackend && conv.messages.isEmpty && _backend != null) {
+      _loadConversationMessages(conv.id);
+    }
+  }
+
+  Future<void> _loadConversationMessages(String convId) async {
+    try {
+      final full = await _backend!.fetchConversation(convId);
+      final idx = _conversations.indexWhere((c) => c.id == convId);
+      if (idx >= 0) _conversations[idx] = full;
+      if (_activeConversation?.id == convId) _activeConversation = full;
+      notifyListeners();
+    } catch (e) {
+      _error = 'Failed to load messages: $e';
+      notifyListeners();
+    }
   }
 
   void renameConversation(String id, String newTitle) {
@@ -609,7 +770,11 @@ class AppProvider extends ChangeNotifier {
     final conv = _conversations.firstWhere((c) => c.id == id,
         orElse: () => throw StateError('not found'));
     conv.title = title;
-    _persistConversations();
+    if (_settings.useBackend && _backend != null) {
+      _backend!.renameConversation(id, title).catchError((_) {});
+    } else {
+      _persistConversations();
+    }
     notifyListeners();
   }
 
@@ -623,18 +788,24 @@ class AppProvider extends ChangeNotifier {
     final idx = msgs.indexWhere((m) => m.id == id);
     if (idx == -1) return;
 
+    final idsToDelete = <String>[];
     if (andFollowingResponse) {
-      // Find how far the assistant turn extends (may include tool messages).
       int end = idx + 1;
-      while (end < msgs.length && msgs[end].role != Role.user) {
-        end++;
-      }
+      while (end < msgs.length && msgs[end].role != Role.user) { end++; }
+      idsToDelete.addAll(msgs.sublist(idx, end).map((m) => m.id));
       msgs.removeRange(idx, end);
     } else {
+      idsToDelete.add(id);
       msgs.removeAt(idx);
     }
 
-    _persistConversations();
+    if (_settings.useBackend && _backend != null) {
+      for (final mid in idsToDelete) {
+        _backend!.deleteMessage(conv.id, mid).catchError((_) {});
+      }
+    } else {
+      _persistConversations();
+    }
     notifyListeners();
   }
 
@@ -645,7 +816,11 @@ class AppProvider extends ChangeNotifier {
           ? visibleConversations.first
           : null;
     }
-    _persistConversations();
+    if (_settings.useBackend && _backend != null) {
+      _backend!.deleteConversation(id).catchError((_) {});
+    } else {
+      _persistConversations();
+    }
     notifyListeners();
   }
 
@@ -712,12 +887,109 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
 
     await StreamingKeepAlive.start();
-    await _autoDetectUrl();
 
-    if (mcpAvailable) {
-      await _runAgenticLoop();
+    if (_settings.useBackend && _backend != null) {
+      await _runBackendGeneration();
     } else {
-      await _runStreamingChat();
+      await _autoDetectUrl();
+      if (mcpAvailable) {
+        await _runAgenticLoop();
+      } else {
+        await _runStreamingChat();
+      }
+    }
+  }
+
+  // ── Backend generation ────────────────────────────────────────────────────
+
+  Future<void> _runBackendGeneration() async {
+    final conv = _activeConversation!;
+    final userMsg = conv.messages.last; // just added in sendMessage()
+
+    // Create local placeholder so the bubble appears immediately
+    final assistantMsg = Message(
+      role: Role.assistant,
+      content: '',
+      isStreaming: true,
+    );
+    conv.messages.add(assistantMsg);
+    conv.updatedAt = DateTime.now();
+    _streamingBackendMsg = assistantMsg;
+    _streamingBackendConvId = conv.id;
+    notifyListeners();
+
+    try {
+      await _backend!.sendMessage(
+        conv.id,
+        userMsg.content,
+        userMsg.images,
+        messageId: userMsg.id,
+      );
+    } catch (e) {
+      assistantMsg.isStreaming = false;
+      assistantMsg.content = '[Error: $e]';
+      _streamingBackendMsg = null;
+      _streamingBackendConvId = null;
+      _error = e.toString();
+      _isStreaming = false;
+      StreamingKeepAlive.stop();
+      notifyListeners();
+      _processNextInQueue();
+    }
+    // Completion is handled by _handleBackendEvent via the WS stream.
+  }
+
+  void _handleBackendEvent(BackendEvent event) {
+    switch (event) {
+      case BEToken(
+            conversationId: final cid,
+            content: final text,
+          ):
+        if (cid == _streamingBackendConvId && _streamingBackendMsg != null) {
+          _streamingBackendMsg!.content += text;
+          notifyListeners();
+        }
+
+      case BEMessageComplete(conversationId: final cid):
+        if (cid == _streamingBackendConvId) {
+          _streamingBackendMsg?.isStreaming = false;
+          _streamingBackendMsg = null;
+          _streamingBackendConvId = null;
+          _isStreaming = false;
+          StreamingKeepAlive.stop();
+          notifyListeners();
+          _processNextInQueue();
+        }
+
+      case BEError(conversationId: final cid, detail: final detail):
+        if (cid == _streamingBackendConvId || cid == null) {
+          if (_streamingBackendMsg != null) {
+            _streamingBackendMsg!.isStreaming = false;
+            if (_streamingBackendMsg!.content.isEmpty) {
+              _streamingBackendMsg!.content = '[Error: $detail]';
+            }
+          }
+          _streamingBackendMsg = null;
+          _streamingBackendConvId = null;
+          _error = detail;
+          _isStreaming = false;
+          StreamingKeepAlive.stop();
+          notifyListeners();
+          _processNextInQueue();
+        }
+
+      case BECancelled(conversationId: final cid):
+        if (cid == _streamingBackendConvId) {
+          _streamingBackendMsg?.isStreaming = false;
+          _streamingBackendMsg = null;
+          _streamingBackendConvId = null;
+          _isStreaming = false;
+          StreamingKeepAlive.stop();
+          notifyListeners();
+        }
+
+      case BEGenerationStart():
+        break; // placeholder already created locally
     }
   }
 
@@ -893,14 +1165,21 @@ class AppProvider extends ChangeNotifier {
 
   Future<void> cancelStream() async {
     _messageQueue.clear();
-    await _streamSub?.cancel();
-    _streamSub = null;
+    if (_settings.useBackend && _backend != null) {
+      final cid = _streamingBackendConvId ?? _activeConversation?.id;
+      if (cid != null) _backend!.cancelGeneration(cid);
+    } else {
+      await _streamSub?.cancel();
+      _streamSub = null;
+    }
     if (_activeConversation != null) {
       final msgs = _activeConversation!.messages;
       if (msgs.isNotEmpty && msgs.last.isStreaming) {
         msgs.last.isStreaming = false;
       }
     }
+    _streamingBackendMsg = null;
+    _streamingBackendConvId = null;
     _isStreaming = false;
     StreamingKeepAlive.stop();
     notifyListeners();

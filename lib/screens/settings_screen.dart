@@ -93,6 +93,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         injectDateTime: s.injectDateTime,
         debugLogging: s.debugLogging,
         debugLogPath: s.debugLogPath,
+        useBackend: s.useBackend,
+        backendUrl: s.backendUrl,
+        backendToken: s.backendToken,
+        backendAllowSelfSigned: s.backendAllowSelfSigned,
       ),
     );
     if (mounted) {
@@ -131,6 +135,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           16 + MediaQuery.viewPaddingOf(context).bottom,
         ),
         children: [
+          const _SectionHeader(title: 'Backend Server'),
+          const _BackendCard(),
+          const SizedBox(height: 8),
           const _SectionHeader(title: 'Connection'),
           _SettingsCard(
             children: [
@@ -2200,6 +2207,230 @@ class _McpNavTile extends StatelessWidget {
             ),
           ),
         );
+      },
+    );
+  }
+}
+
+// ── Backend card ──────────────────────────────────────────────────────────────
+
+class _BackendCard extends StatefulWidget {
+  const _BackendCard();
+
+  @override
+  State<_BackendCard> createState() => _BackendCardState();
+}
+
+class _BackendCardState extends State<_BackendCard> {
+  final _urlCtrl = TextEditingController();
+  final _userCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
+  bool _passwordVisible = false;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = context.read<AppProvider>().settings;
+    _urlCtrl.text = s.backendUrl;
+  }
+
+  @override
+  void dispose() {
+    _urlCtrl.dispose();
+    _userCtrl.dispose();
+    _passCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _doLogin(bool register) async {
+    final p = context.read<AppProvider>();
+    final url = _urlCtrl.text.trim();
+    final user = _userCtrl.text.trim();
+    final pass = _passCtrl.text;
+    if (url.isEmpty || user.isEmpty || pass.isEmpty) {
+      setState(() => _error = 'URL, username and password are required.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      if (register) {
+        await p.backendRegister(url, user, pass);
+      } else {
+        await p.backendLogin(url, user, pass);
+      }
+      _userCtrl.clear();
+      _passCtrl.clear();
+    } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Consumer<AppProvider>(
+      builder: (context, p, _) {
+        final s = p.settings;
+        final loggedIn = s.backendToken.isNotEmpty;
+
+        return _SettingsCard(children: [
+          // ── Enable toggle ────────────────────────────────────────────────
+          SwitchListTile(
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+            title: const Text('Use backend for generation'),
+            subtitle: const Text(
+                'Generation runs on the server — stays alive if you leave Wi-Fi'),
+            value: s.useBackend,
+            onChanged: loggedIn
+                ? (v) async {
+                    await p.updateSettings(s.copyWith(useBackend: v));
+                    if (v && !p.backendConnected) {
+                      await p.backendLogin(
+                          s.backendUrl, '', ''); // reconnect with stored token
+                    }
+                  }
+                : null, // disabled until logged in
+          ),
+
+          const Divider(height: 1),
+
+          // ── URL + self-signed ────────────────────────────────────────────
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: _urlCtrl,
+                  keyboardType: TextInputType.url,
+                  enabled: !loggedIn,
+                  decoration: const InputDecoration(
+                    labelText: 'Backend URL',
+                    hintText: 'https://192.168.1.50',
+                  ),
+                ),
+                const SizedBox(height: 4),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Allow self-signed certificate'),
+                  value: s.backendAllowSelfSigned,
+                  onChanged: (v) => p.setBackendAllowSelfSigned(v),
+                ),
+              ],
+            ),
+          ),
+
+          const Divider(height: 1),
+
+          // ── Auth section ─────────────────────────────────────────────────
+          if (!loggedIn) ...[
+            Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: _userCtrl,
+                    decoration:
+                        const InputDecoration(labelText: 'Username'),
+                    autofillHints: const [AutofillHints.username],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _passCtrl,
+                    obscureText: !_passwordVisible,
+                    decoration: InputDecoration(
+                      labelText: 'Password',
+                      suffixIcon: IconButton(
+                        icon: Icon(_passwordVisible
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined),
+                        onPressed: () => setState(
+                            () => _passwordVisible = !_passwordVisible),
+                      ),
+                    ),
+                    autofillHints: const [AutofillHints.password],
+                    onSubmitted: (_) => _doLogin(false),
+                  ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      _error!,
+                      style: TextStyle(
+                          color: cs.error, fontSize: 12),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: _busy ? null : () => _doLogin(false),
+                          child: _busy
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white),
+                                )
+                              : const Text('Login'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _busy ? null : () => _doLogin(true),
+                          child: const Text('Register'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'Register creates the first account on a fresh backend.',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: cs.onSurfaceVariant),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ] else ...[
+            // ── Connected state ──────────────────────────────────────────
+            ListTile(
+              leading: Icon(
+                p.backendConnected
+                    ? Icons.cloud_done_outlined
+                    : Icons.cloud_off_outlined,
+                color: p.backendConnected ? cs.primary : cs.error,
+              ),
+              title: Text(p.backendConnected
+                  ? 'Connected to ${s.backendUrl}'
+                  : 'Disconnected'),
+              subtitle: p.backendConnectError != null
+                  ? Text(p.backendConnectError!,
+                      style: TextStyle(color: cs.error, fontSize: 12))
+                  : null,
+              trailing: TextButton(
+                onPressed: p.backendLogout,
+                child: const Text('Logout'),
+              ),
+            ),
+          ],
+        ]);
       },
     );
   }
