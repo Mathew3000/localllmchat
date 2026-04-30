@@ -377,6 +377,21 @@ class _MarkdownContent extends StatelessWidget {
           color: theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(8),
         ),
+        // Override the default Colors.blue.shade100 which is unreadable in
+        // dark mode (white text on pale blue). Use a theme-aware background
+        // with a primary-coloured left accent bar instead.
+        blockquoteDecoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(4),
+          border: Border(
+            left: BorderSide(
+              color: theme.colorScheme.primary.withValues(alpha: 0.7),
+              width: 3,
+            ),
+          ),
+        ),
+        blockquotePadding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       ),
     );
   }
