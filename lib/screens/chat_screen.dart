@@ -405,6 +405,12 @@ class _MessageList extends StatelessWidget {
               highlightColor: p.settings.highlightColor != null
                   ? Color(p.settings.highlightColor!)
                   : null,
+              onDelete: p.isStreaming
+                  ? null // disable during streaming
+                  : (withResponse) => p.deleteMessage(
+                        msg.id,
+                        andFollowingResponse: withResponse,
+                      ),
             );
           },
         );

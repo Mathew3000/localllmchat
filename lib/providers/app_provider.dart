@@ -603,6 +603,31 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Deletes the message with [id] from the active conversation.
+  /// When [andFollowingResponse] is true, also removes all consecutive
+  /// non-user messages that immediately follow it (the AI turn).
+  void deleteMessage(String id, {bool andFollowingResponse = false}) {
+    final conv = _activeConversation;
+    if (conv == null) return;
+    final msgs = conv.messages;
+    final idx = msgs.indexWhere((m) => m.id == id);
+    if (idx == -1) return;
+
+    if (andFollowingResponse) {
+      // Find how far the assistant turn extends (may include tool messages).
+      int end = idx + 1;
+      while (end < msgs.length && msgs[end].role != Role.user) {
+        end++;
+      }
+      msgs.removeRange(idx, end);
+    } else {
+      msgs.removeAt(idx);
+    }
+
+    _persistConversations();
+    notifyListeners();
+  }
+
   void deleteConversation(String id) {
     _conversations.removeWhere((c) => c.id == id);
     if (_activeConversation?.id == id) {

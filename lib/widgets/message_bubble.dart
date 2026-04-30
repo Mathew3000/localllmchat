@@ -76,6 +76,10 @@ class MessageBubble extends StatelessWidget {
   final Color? assistantBubbleColor;
   /// Background colour for ==highlighted== / <mark> spans. Null = amber.
   final Color? highlightColor;
+  /// Called when the user confirms deletion.
+  /// [withResponse] is true when a user message is deleted together with
+  /// the following AI response.
+  final void Function(bool withResponse)? onDelete;
 
   const MessageBubble({
     super.key,
@@ -83,6 +87,7 @@ class MessageBubble extends StatelessWidget {
     this.userBubbleColor,
     this.assistantBubbleColor,
     this.highlightColor,
+    this.onDelete,
   });
 
   @override
@@ -144,14 +149,25 @@ class MessageBubble extends StatelessWidget {
               ],
             ],
           ),
-          // Copy button — indented to align with the bubble edge (past the avatar).
+          // Footer: copy + delete buttons, indented past the avatar.
           Padding(
             padding: EdgeInsets.only(
               top: 2,
-              left: isUser ? 0 : 36,  // 28 avatar + 8 gap
+              left: isUser ? 0 : 36, // 28 avatar + 8 gap
               right: isUser ? 36 : 0,
             ),
-            child: _CopyButton(onTap: () => _copyToClipboard(context)),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _CopyButton(onTap: () => _copyToClipboard(context)),
+                if (onDelete != null && !message.isStreaming) ...[
+                  const SizedBox(width: 10),
+                  _DeleteButton(
+                    onTap: () => _confirmDelete(context, isUser),
+                  ),
+                ],
+              ],
+            ),
           ),
         ],
       ),
@@ -241,6 +257,57 @@ class MessageBubble extends StatelessWidget {
         ],
       ],
     );
+  }
+
+  Future<void> _confirmDelete(BuildContext context, bool isUser) async {
+    final cs = Theme.of(context).colorScheme;
+    if (isUser) {
+      // Offer two options: delete just this message, or this + AI response.
+      final result = await showDialog<bool?>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Delete message?'),
+          content: const Text(
+              'Remove just your message, or also the AI\'s response?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Message only'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: FilledButton.styleFrom(backgroundColor: cs.error),
+              child: const Text('Both'),
+            ),
+          ],
+        ),
+      );
+      if (result != null) onDelete?.call(result);
+    } else {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Delete response?'),
+          content: const Text('This will remove the AI\'s response.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: FilledButton.styleFrom(backgroundColor: cs.error),
+              child: const Text('Delete'),
+            ),
+          ],
+        ),
+      );
+      if (ok == true) onDelete?.call(false);
+    }
   }
 
   void _copyToClipboard(BuildContext context) {
@@ -691,6 +758,22 @@ class _CopyButtonState extends State<_CopyButton> {
             : Icon(Icons.copy_rounded,
                 key: const ValueKey('copy'), size: 14, color: color),
       ),
+    );
+  }
+}
+
+// ── Delete button ─────────────────────────────────────────────────────────────
+
+class _DeleteButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _DeleteButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
+    return GestureDetector(
+      onTap: onTap,
+      child: Icon(Icons.delete_outline_rounded, size: 14, color: color),
     );
   }
 }
