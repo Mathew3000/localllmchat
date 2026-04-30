@@ -18,6 +18,9 @@ class AppSettings {
   final int? defaultUserBubbleColor;
   /// Default ARGB colour for assistant message bubbles. Null = theme default.
   final int? defaultAssistantBubbleColor;
+  /// ARGB colour used as the background for inline highlights (==text== / <mark>).
+  /// Null = default amber (#FFD000).
+  final int? highlightColor;
   /// LLM request timeout in seconds. Default 300 s (5 min).
   final int requestTimeoutSeconds;
   /// All configured MCP servers.
@@ -65,6 +68,7 @@ class AppSettings {
     this.backgroundColor,
     this.defaultUserBubbleColor,
     this.defaultAssistantBubbleColor,
+    this.highlightColor,
     this.requestTimeoutSeconds = 300,
     this.mcpServers = const [],
     this.syncUrl = '',
@@ -101,6 +105,7 @@ class AppSettings {
     Object? backgroundColor = _unset,
     Object? defaultUserBubbleColor = _unset,
     Object? defaultAssistantBubbleColor = _unset,
+    Object? highlightColor = _unset,
     int? requestTimeoutSeconds,
     List<McpServer>? mcpServers,
     String? syncUrl,
@@ -133,6 +138,9 @@ class AppSettings {
             identical(defaultAssistantBubbleColor, _unset)
                 ? this.defaultAssistantBubbleColor
                 : defaultAssistantBubbleColor as int?,
+        highlightColor: identical(highlightColor, _unset)
+            ? this.highlightColor
+            : highlightColor as int?,
         requestTimeoutSeconds:
             requestTimeoutSeconds ?? this.requestTimeoutSeconds,
         mcpServers: mcpServers ?? this.mcpServers,
@@ -160,6 +168,7 @@ class AppSettings {
         'backgroundColor': backgroundColor,
         'defaultUserBubbleColor': defaultUserBubbleColor,
         'defaultAssistantBubbleColor': defaultAssistantBubbleColor,
+        'highlightColor': highlightColor,
         'requestTimeoutSeconds': requestTimeoutSeconds,
         'mcpServers': mcpServers.map((s) => s.toJson()).toList(),
         'syncUrl': syncUrl,
@@ -221,6 +230,7 @@ class AppSettings {
       defaultUserBubbleColor: json['defaultUserBubbleColor'] as int?,
       defaultAssistantBubbleColor:
           json['defaultAssistantBubbleColor'] as int?,
+      highlightColor: json['highlightColor'] as int?,
       requestTimeoutSeconds:
           json['requestTimeoutSeconds'] as int? ?? 300,
       mcpServers: mcpServers,

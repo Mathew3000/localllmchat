@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:url_launcher/url_launcher.dart';
 import '../models/message.dart';
 import 'color_picker.dart' show onColor;
@@ -72,12 +73,15 @@ class MessageBubble extends StatelessWidget {
   final Color? userBubbleColor;
   /// Custom background colour for assistant bubbles. Null = theme default.
   final Color? assistantBubbleColor;
+  /// Background colour for ==highlighted== / <mark> spans. Null = amber.
+  final Color? highlightColor;
 
   const MessageBubble({
     super.key,
     required this.message,
     this.userBubbleColor,
     this.assistantBubbleColor,
+    this.highlightColor,
   });
 
   @override
@@ -138,7 +142,7 @@ class MessageBubble extends StatelessWidget {
                               height: 1.4,
                             ),
                           )
-                        : _buildAssistantContent(context, theme),
+                        : _buildAssistantContent(context, theme, highlightColor),
                   ),
                 ),
               ),
@@ -165,8 +169,12 @@ class MessageBubble extends StatelessWidget {
   /// Wraps [_AssistantContent] in an adapted [Theme] when a custom bubble
   /// colour is set, so all descendant widgets (markdown, thinking block, etc.)
   /// automatically use legible foreground colours.
-  Widget _buildAssistantContent(BuildContext context, ThemeData theme) {
-    if (assistantBubbleColor == null) return _AssistantContent(message: message);
+  Widget _buildAssistantContent(
+      BuildContext context, ThemeData theme, Color? highlightColor) {
+    if (assistantBubbleColor == null) {
+      return _AssistantContent(
+          message: message, highlightColor: highlightColor);
+    }
 
     final bg = assistantBubbleColor!;
     final fg = onColor(bg);
@@ -189,7 +197,8 @@ class MessageBubble extends StatelessWidget {
           surfaceContainerHighest: innerBg,
         ),
       ),
-      child: _AssistantContent(message: message),
+      child: _AssistantContent(
+          message: message, highlightColor: highlightColor),
     );
   }
 
@@ -209,7 +218,9 @@ class MessageBubble extends StatelessWidget {
 
 class _AssistantContent extends StatelessWidget {
   final Message message;
-  const _AssistantContent({required this.message});
+  final Color? highlightColor;
+  const _AssistantContent(
+      {required this.message, this.highlightColor});
 
   @override
   Widget build(BuildContext context) {
@@ -256,6 +267,7 @@ class _AssistantContent extends StatelessWidget {
           _MarkdownContent(
             text: contentSegments.map((s) => s.text).join(),
             theme: theme,
+            highlightColor: highlightColor,
           ),
         ],
 
@@ -269,18 +281,79 @@ class _AssistantContent extends StatelessWidget {
   }
 }
 
+// ── Markdown highlight syntax: ==text== → <mark> element ─────────────────────
+
+class _MarkSyntax extends md.InlineSyntax {
+  _MarkSyntax() : super(r'==([^=\n]+)==');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element.text('mark', match[1]!));
+    return true;
+  }
+}
+
+// ── Builder that renders <mark> elements with highlight bg + contrast text ────
+
+class _MarkBuilder extends MarkdownElementBuilder {
+  final Color bg;
+  final Color fg;
+  _MarkBuilder({required this.bg, required this.fg});
+
+  @override
+  Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: Text(
+        element.textContent,
+        style: (preferredStyle ?? const TextStyle()).copyWith(
+          color: fg,
+          backgroundColor: Colors.transparent,
+          fontSize: 15,
+          height: 1.4,
+        ),
+      ),
+    );
+  }
+}
+
 // ── Markdown renderer ─────────────────────────────────────────────────────────
 
 class _MarkdownContent extends StatelessWidget {
   final String text;
   final ThemeData theme;
-  const _MarkdownContent({required this.text, required this.theme});
+  /// Highlight background colour. Null = amber (#FFD000).
+  final Color? highlightColor;
+
+  const _MarkdownContent({
+    required this.text,
+    required this.theme,
+    this.highlightColor,
+  });
+
+  /// Convert <mark>…</mark> HTML tags to ==…== so _MarkSyntax can handle them.
+  static String _preprocess(String src) => src.replaceAllMapped(
+        RegExp(r'<mark>(.*?)</mark>', caseSensitive: false, dotAll: true),
+        (m) => '==${m[1]}==',
+      );
 
   @override
   Widget build(BuildContext context) {
+    final highlightBg = highlightColor ?? const Color(0xFFFFD000);
+    final highlightFg = onColor(highlightBg);
+
     return MarkdownBody(
-      data: text,
+      data: _preprocess(text),
       selectable: true,
+      inlineSyntaxes: [_MarkSyntax()],
+      builders: {
+        'mark': _MarkBuilder(bg: highlightBg, fg: highlightFg),
+      },
       onTapLink: (text, href, title) async {
         if (href == null) return;
         final uri = Uri.tryParse(href);

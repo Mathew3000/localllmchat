@@ -33,6 +33,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int? _globalBgColor;
   int? _defaultUserBubbleColor;
   int? _defaultAssistantBubbleColor;
+  int? _highlightColor;
 
   @override
   void initState() {
@@ -49,6 +50,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _globalBgColor = s.backgroundColor;
     _defaultUserBubbleColor = s.defaultUserBubbleColor;
     _defaultAssistantBubbleColor = s.defaultAssistantBubbleColor;
+    _highlightColor = s.highlightColor;
   }
 
   @override
@@ -78,6 +80,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         backgroundColor: _globalBgColor,
         defaultUserBubbleColor: _defaultUserBubbleColor,
         defaultAssistantBubbleColor: _defaultAssistantBubbleColor,
+        highlightColor: _highlightColor,
         requestTimeoutSeconds: _requestTimeoutSeconds,
         mcpServers: s.mcpServers,
         syncUrl: s.syncUrl,
@@ -328,6 +331,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 label: 'AI bubbles (default)',
                 current: _defaultAssistantBubbleColor,
                 onPick: (c) => setState(() => _defaultAssistantBubbleColor = c),
+              ),
+              const Divider(height: 1),
+              _ColorSection(
+                icon: Icons.highlight_rounded,
+                label: 'Inline highlights (==text== / <mark>)',
+                current: _highlightColor,
+                onPick: (c) => setState(() => _highlightColor = c),
               ),
             ],
           ),
@@ -821,7 +831,6 @@ class _ColorSection extends StatelessWidget {
   final String label;
   final int? current;
   final ValueChanged<int?> onPick;
-
   const _ColorSection({
     required this.icon,
     required this.label,

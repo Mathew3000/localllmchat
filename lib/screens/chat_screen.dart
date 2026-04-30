@@ -402,6 +402,9 @@ class _MessageList extends StatelessWidget {
               message: msg,
               userBubbleColor: userColor,
               assistantBubbleColor: aiColor,
+              highlightColor: p.settings.highlightColor != null
+                  ? Color(p.settings.highlightColor!)
+                  : null,
             );
           },
         );
