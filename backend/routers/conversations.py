@@ -40,7 +40,7 @@ async def list_conversations(
     return result.scalars().all()
 
 
-@router.post("", response_model=ConversationDetail, status_code=201)
+@router.post("", response_model=ConversationSummary, status_code=201)
 async def create_conversation(
     req: CreateConversationRequest,
     db: AsyncSession = Depends(get_db),
