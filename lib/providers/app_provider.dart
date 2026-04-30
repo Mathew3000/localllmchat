@@ -1502,20 +1502,63 @@ class AppProvider extends ChangeNotifier {
           .map((j) => Conversation.fromJson(j as Map<String, dynamic>))
           .toList()
         ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-      final settings =
+
+      // Parse imported settings but preserve all device-local fields so that
+      // backend credentials, sync tokens, and debug settings are not wiped.
+      final imported =
           AppSettings.fromJson(data['settings'] as Map<String, dynamic>);
+      final merged = imported.copyWith(
+        useBackend: _settings.useBackend,
+        backendUrl: _settings.backendUrl,
+        backendToken: _settings.backendToken,
+        backendAllowSelfSigned: _settings.backendAllowSelfSigned,
+        autoSyncEnabled: _settings.autoSyncEnabled,
+        autoSyncIntervalMinutes: _settings.autoSyncIntervalMinutes,
+        debugLogging: _settings.debugLogging,
+        debugLogPath: _settings.debugLogPath,
+        syncUrl: _settings.syncUrl,
+        syncUsername: _settings.syncUsername,
+        syncAccessToken: _settings.syncAccessToken,
+        syncRefreshToken: _settings.syncRefreshToken,
+        syncLastAt: _settings.syncLastAt,
+      );
 
       _conversations = convList;
-      _settings = settings;
+      _settings = merged;
       _activeConversation = null;
       _secretsUnlocked = false;
 
-      await _storage.saveConversations(_conversations);
+      if (_settings.useBackend && _backend != null) {
+        // Upload conversations to the backend, then refresh from server so
+        // the local list reflects what was actually stored.
+        await _uploadConversationsToBackend(convList);
+        try {
+          _conversations = await _backend!.fetchConversations();
+        } catch (_) {}
+      } else {
+        await _storage.saveConversations(_conversations);
+      }
+
       await _storage.saveSettings(_settings);
       notifyListeners();
       return null;
     } catch (e) {
       return 'Could not parse backup: $e';
+    }
+  }
+
+  /// Uploads a list of conversations (with all their messages) to the backend.
+  /// Used during backup import in backend mode.
+  Future<void> _uploadConversationsToBackend(List<Conversation> convs) async {
+    for (final conv in convs) {
+      try {
+        await _backend!.createConversation(id: conv.id, title: conv.title);
+        for (final msg in conv.messages) {
+          await _backend!.addMessage(conv.id, msg);
+        }
+      } catch (_) {
+        // Skip conversations that fail (e.g. already exist) and continue.
+      }
     }
   }
 }

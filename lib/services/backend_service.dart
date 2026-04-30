@@ -365,6 +365,31 @@ class BackendService {
     }
   }
 
+  Future<void> addMessage(String convId, Message msg) async {
+    final client = _httpClient();
+    try {
+      final body = <String, dynamic>{
+        'id': msg.id,
+        'role': msg.role.name,
+        'content': msg.content,
+        'images': msg.images,
+        if (msg.toolCallId != null) 'tool_call_id': msg.toolCallId,
+        if (msg.toolCalls != null)
+          'tool_calls': msg.toolCalls!.map((t) => t.toApiJson()).toList(),
+      };
+      final resp = await client
+          .post(
+            Uri.parse('$_base/api/conversations/$convId/messages'),
+            headers: _headers,
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 15));
+      _check(resp);
+    } finally {
+      client.close();
+    }
+  }
+
   Future<void> deleteMessage(String convId, String msgId) async {
     final client = _httpClient();
     try {
