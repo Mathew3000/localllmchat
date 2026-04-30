@@ -1,0 +1,22 @@
+# LocalLLMChat backend — TLS with user-supplied or generated certs.
+# Certificate files are expected at /etc/certs/ (mounted from ./certs/).
+#
+# To use Let's Encrypt instead (if you have a public domain):
+#   Replace the tls directive with just your domain name, e.g.:
+#   chat.yourdomain.com { ... }
+
+:443 {
+    tls /etc/certs/server.crt /etc/certs/server.key
+
+    # WebSocket upgrade for streaming generation
+    @ws {
+        path /ws
+    }
+    reverse_proxy @ws backend:8080
+
+    # REST API
+    reverse_proxy /api/* backend:8080
+
+    # Health check
+    reverse_proxy /health backend:8080
+}

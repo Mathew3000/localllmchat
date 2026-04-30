@@ -33,3 +33,9 @@ ios/*.xcworkspace
 .vscode/
 .idea/
 *.iml
+
+# Backend — secrets and generated certs never go in the repo
+backend/.env
+certs/*.crt
+certs/*.key
+certs/*.srl

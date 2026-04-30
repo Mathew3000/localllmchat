@@ -1,0 +1,31 @@
+services:
+
+  # ── Reverse proxy — handles TLS, forwards to backend ─────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/etc/certs:ro
+    depends_on:
+      - backend
+
+  # ── LocalLLMChat backend ──────────────────────────────────────────────────
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: ./backend/.env
+    volumes:
+      - backend-data:/data
+    # Not exposed directly — all traffic goes through Caddy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  backend-data:
