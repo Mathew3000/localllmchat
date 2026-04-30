@@ -153,16 +153,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               const Divider(height: 1),
-              _LabeledField(
-                label: 'Away URL',
-                child: TextField(
-                  controller: _baseUrlAwayController,
-                  keyboardType: TextInputType.url,
-                  decoration: const InputDecoration(
-                    hintText: 'http://100.x.x.x:5000/v1',
-                    helperText: 'WireGuard / Tailscale — optional',
-                  ),
-                ),
+              Consumer<AppProvider>(
+                builder: (_, provider, __) {
+                  final inBackendMode = provider.settings.useBackend;
+                  return Opacity(
+                    opacity: inBackendMode ? 0.45 : 1.0,
+                    child: _LabeledField(
+                      label: 'Away URL',
+                      child: TextField(
+                        controller: _baseUrlAwayController,
+                        keyboardType: TextInputType.url,
+                        enabled: !inBackendMode,
+                        decoration: InputDecoration(
+                          hintText: 'http://100.x.x.x:5000/v1',
+                          helperText: inBackendMode
+                              ? 'Not used — backend is always on the home network'
+                              : 'WireGuard / Tailscale — optional',
+                        ),
+                      ),
+                    ),
+                  );
+                },
               ),
               const Divider(height: 1),
               _LabeledField(

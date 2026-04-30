@@ -124,7 +124,14 @@ async def run_generation(
         history = list(result.scalars().all())
 
         # ── Build request ─────────────────────────────────────────────────────
-        base_url = settings.get("baseUrl", "http://localhost:11434/v1").rstrip("/")
+        # The app syncs the LLM endpoint as "baseUrlHome" (Away URL is irrelevant
+        # for the backend — it lives on the same network as the LLM server).
+        # Fall back to legacy "baseUrl" key for older settings payloads.
+        base_url = (
+            settings.get("baseUrlHome")
+            or settings.get("baseUrl")
+            or "http://localhost:11434/v1"
+        ).rstrip("/")
         model = settings.get("selectedModel", "")
         temperature = float(settings.get("temperature", 0.7))
         max_tokens = int(settings.get("maxTokens", 4096))
