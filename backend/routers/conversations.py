@@ -13,6 +13,7 @@ from schemas import (
     CreateConversationRequest,
     MessageOut,
     RenameConversationRequest,
+    UpdateConversationRequest,
 )
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -49,6 +50,9 @@ async def create_conversation(
         id=req.id or str(uuid.uuid4()),
         user_id=user.id,
         title=req.title,
+        is_secret=req.is_secret,
+        user_bubble_color=req.user_bubble_color,
+        assistant_bubble_color=req.assistant_bubble_color,
     )
     db.add(conv)
     await db.commit()
@@ -70,15 +74,25 @@ async def get_conversation(
 
 
 @router.patch("/{conv_id}", response_model=ConversationSummary)
-async def rename_conversation(
+async def update_conversation(
     conv_id: str,
-    req: RenameConversationRequest,
+    req: UpdateConversationRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     conv = await db.get(Conversation, conv_id)
     _own_or_404(conv, user)
-    conv.title = req.title
+    if req.title is not None:
+        conv.title = req.title
+    if req.is_secret is not None:
+        conv.is_secret = req.is_secret
+    # Bubble colours use a sentinel: passing None means "clear", so we always
+    # apply them when the key is present in the body.  The client sends all
+    # fields it wants to update, omitting ones it doesn't.
+    if req.user_bubble_color is not None or "user_bubble_color" in req.model_fields_set:
+        conv.user_bubble_color = req.user_bubble_color
+    if req.assistant_bubble_color is not None or "assistant_bubble_color" in req.model_fields_set:
+        conv.assistant_bubble_color = req.assistant_bubble_color
     conv.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return conv

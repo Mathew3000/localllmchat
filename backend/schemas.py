@@ -40,6 +40,9 @@ class MessageOut(BaseModel):
 class ConversationSummary(BaseModel):
     id: str
     title: str
+    is_secret: bool = False
+    user_bubble_color: int | None = None
+    assistant_bubble_color: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -54,10 +57,20 @@ class CreateConversationRequest(BaseModel):
     title: str = "New Conversation"
     # Allow client to supply its own ID (useful for migrating existing local convs)
     id: str | None = None
+    is_secret: bool = False
+    user_bubble_color: int | None = None
+    assistant_bubble_color: int | None = None
 
 
 class RenameConversationRequest(BaseModel):
     title: str
+
+
+class UpdateConversationRequest(BaseModel):
+    title: str | None = None
+    is_secret: bool | None = None
+    user_bubble_color: int | None = None
+    assistant_bubble_color: int | None = None
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────

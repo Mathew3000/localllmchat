@@ -511,7 +511,14 @@ class AppProvider extends ChangeNotifier {
     final conv = _conversations.firstWhere((c) => c.id == id);
     conv.userBubbleColor = userBubbleColor;
     conv.assistantBubbleColor = assistantBubbleColor;
-    _persistConversations();
+    if (_settings.useBackend && _backend != null) {
+      _backend!.patchConversation(id, {
+        'user_bubble_color': userBubbleColor,
+        'assistant_bubble_color': assistantBubbleColor,
+      }).catchError((_) {});
+    } else {
+      _persistConversations();
+    }
     notifyListeners();
   }
 
@@ -524,7 +531,12 @@ class AppProvider extends ChangeNotifier {
       final visible = _conversations.where((c) => !c.isSecret).toList();
       _activeConversation = visible.isNotEmpty ? visible.first : null;
     }
-    _persistConversations();
+    if (_settings.useBackend && _backend != null) {
+      _backend!.patchConversation(id, {'is_secret': conv.isSecret})
+          .catchError((_) {});
+    } else {
+      _persistConversations();
+    }
     notifyListeners();
   }
 
@@ -1551,13 +1563,22 @@ class AppProvider extends ChangeNotifier {
   /// Used during backup import in backend mode.
   Future<void> _uploadConversationsToBackend(List<Conversation> convs) async {
     for (final conv in convs) {
+      // Create conversation — may already exist, that's fine.
       try {
-        await _backend!.createConversation(id: conv.id, title: conv.title);
-        for (final msg in conv.messages) {
+        await _backend!.createConversation(
+          id: conv.id,
+          title: conv.title,
+          isSecret: conv.isSecret,
+          userBubbleColor: conv.userBubbleColor,
+          assistantBubbleColor: conv.assistantBubbleColor,
+        );
+      } catch (_) {}
+      // Upload messages individually — each has its own error boundary so one
+      // failure (e.g. duplicate ID) doesn't abort the rest of the conversation.
+      for (final msg in conv.messages) {
+        try {
           await _backend!.addMessage(conv.id, msg);
-        }
-      } catch (_) {
-        // Skip conversations that fail (e.g. already exist) and continue.
+        } catch (_) {}
       }
     }
   }

@@ -318,6 +318,9 @@ class BackendService {
   Future<Conversation> createConversation({
     String? id,
     String title = 'New Chat',
+    bool isSecret = false,
+    int? userBubbleColor,
+    int? assistantBubbleColor,
   }) async {
     final client = _httpClient();
     try {
@@ -325,7 +328,14 @@ class BackendService {
           .post(
             Uri.parse('$_base/api/conversations'),
             headers: _headers,
-            body: jsonEncode({'title': title, if (id != null) 'id': id}),
+            body: jsonEncode({
+              'title': title,
+              if (id != null) 'id': id,
+              'is_secret': isSecret,
+              if (userBubbleColor != null) 'user_bubble_color': userBubbleColor,
+              if (assistantBubbleColor != null)
+                'assistant_bubble_color': assistantBubbleColor,
+            }),
           )
           .timeout(const Duration(seconds: 15));
       _check(resp);
@@ -335,14 +345,14 @@ class BackendService {
     }
   }
 
-  Future<void> renameConversation(String id, String title) async {
+  Future<void> patchConversation(String id, Map<String, dynamic> fields) async {
     final client = _httpClient();
     try {
       final resp = await client
           .patch(
             Uri.parse('$_base/api/conversations/$id'),
             headers: _headers,
-            body: jsonEncode({'title': title}),
+            body: jsonEncode(fields),
           )
           .timeout(const Duration(seconds: 15));
       _check(resp);
@@ -350,6 +360,9 @@ class BackendService {
       client.close();
     }
   }
+
+  Future<void> renameConversation(String id, String title) =>
+      patchConversation(id, {'title': title});
 
   Future<void> deleteConversation(String id) async {
     final client = _httpClient();
@@ -487,6 +500,9 @@ class BackendService {
       messages: messages,
       createdAt: DateTime.parse(j['created_at'] as String),
       updatedAt: DateTime.parse(j['updated_at'] as String),
+      isSecret: j['is_secret'] as bool? ?? false,
+      userBubbleColor: j['user_bubble_color'] as int?,
+      assistantBubbleColor: j['assistant_bubble_color'] as int?,
     );
   }
 
