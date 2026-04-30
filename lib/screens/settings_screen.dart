@@ -303,6 +303,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 ),
               ),
+              const Divider(height: 1),
+              Consumer<AppProvider>(
+                builder: (_, provider, __) => SwitchListTile(
+                  secondary: const Icon(Icons.schedule_rounded),
+                  title: const Text('Inject date & time'),
+                  subtitle: Text(
+                    'Appends the current date and time to the system prompt',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                        ),
+                  ),
+                  value: provider.settings.injectDateTime,
+                  onChanged: (v) => provider.updateSettings(
+                    provider.settings.copyWith(injectDateTime: v),
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 16),

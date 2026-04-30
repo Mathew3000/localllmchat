@@ -46,6 +46,11 @@ class AppSettings {
   /// How often auto-sync fires, in minutes.
   final int autoSyncIntervalMinutes;
 
+  // ── Context injection ──────────────────────────────────────────────────────
+  /// When true, the current date & time is appended to the system prompt
+  /// before every request so the model always knows what time it is.
+  final bool injectDateTime;
+
   // ── Debug settings ─────────────────────────────────────────────────────────
   /// When true, all raw HTTP traffic is written to [debugLogPath].
   /// Excluded from sync — this is a per-device developer setting.
@@ -78,6 +83,7 @@ class AppSettings {
     this.syncLastAt = '',
     this.autoSyncEnabled = false,
     this.autoSyncIntervalMinutes = 30,
+    this.injectDateTime = false,
     this.debugLogging = false,
     this.debugLogPath = '',
   });
@@ -115,6 +121,7 @@ class AppSettings {
     String? syncLastAt,
     bool? autoSyncEnabled,
     int? autoSyncIntervalMinutes,
+    bool? injectDateTime,
     bool? debugLogging,
     String? debugLogPath,
   }) =>
@@ -151,6 +158,7 @@ class AppSettings {
         syncLastAt: syncLastAt ?? this.syncLastAt,
         autoSyncEnabled: autoSyncEnabled ?? this.autoSyncEnabled,
         autoSyncIntervalMinutes: autoSyncIntervalMinutes ?? this.autoSyncIntervalMinutes,
+        injectDateTime: injectDateTime ?? this.injectDateTime,
         debugLogging: debugLogging ?? this.debugLogging,
         debugLogPath: debugLogPath ?? this.debugLogPath,
       );
@@ -178,6 +186,7 @@ class AppSettings {
         'syncLastAt': syncLastAt,
         'autoSyncEnabled': autoSyncEnabled,
         'autoSyncIntervalMinutes': autoSyncIntervalMinutes,
+        'injectDateTime': injectDateTime,
         'debugLogging': debugLogging,
         'debugLogPath': debugLogPath,
       };
@@ -241,6 +250,7 @@ class AppSettings {
       syncLastAt: json['syncLastAt'] as String? ?? '',
       autoSyncEnabled: json['autoSyncEnabled'] as bool? ?? false,
       autoSyncIntervalMinutes: json['autoSyncIntervalMinutes'] as int? ?? 30,
+      injectDateTime: json['injectDateTime'] as bool? ?? false,
       debugLogging: json['debugLogging'] as bool? ?? false,
       debugLogPath: json['debugLogPath'] as String? ?? '',
     );

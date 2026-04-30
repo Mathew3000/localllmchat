@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 import '../models/message.dart';
 import '../models/settings.dart';
 import '../models/tool_call.dart';
@@ -29,8 +30,14 @@ class ApiService {
     bool toolsEnabled = false,
   }) {
     final messages = <Map<String, dynamic>>[];
-    if (settings.systemPrompt.isNotEmpty) {
-      messages.add({'role': 'system', 'content': settings.systemPrompt});
+    // Build system prompt, optionally appending current date/time.
+    final systemBase = settings.systemPrompt;
+    final dateTimeSuffix = settings.injectDateTime
+        ? '\n\nCurrent date and time: ${DateFormat("EEEE, d MMMM yyyy, HH:mm").format(DateTime.now())}'
+        : '';
+    final systemContent = '$systemBase$dateTimeSuffix'.trim();
+    if (systemContent.isNotEmpty) {
+      messages.add({'role': 'system', 'content': systemContent});
     }
     messages.addAll(
       history
