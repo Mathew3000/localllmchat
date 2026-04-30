@@ -570,6 +570,10 @@ class AppProvider extends ChangeNotifier {
     _availableModels = [];
     _lastNetworkCheck = null;
     _startAutoSync(); // restart in case interval or enabled flag changed
+    // Push shared settings to backend so run_generation() picks them up.
+    if (_settings.useBackend && _backend != null) {
+      _backend!.pushSettings(_settings.toSyncJson()).catchError((_) {});
+    }
     notifyListeners();
   }
 
@@ -606,6 +610,32 @@ class AppProvider extends ChangeNotifier {
 
       _backendEventSub?.cancel();
       _backendEventSub = _backend!.events.listen(_handleBackendEvent);
+
+      // Pull server-side settings and merge into local settings so the app
+      // reflects whatever was last saved (e.g. LLM URL, model, system prompt).
+      try {
+        final remote = await _backend!.fetchSettings();
+        if (remote.isNotEmpty) {
+          _settings = AppSettings.fromJson({
+            ..._settings.toJson(),   // local base (has device-local fields)
+            ...remote,               // server overrides shared fields
+            // Always keep device-local fields from local settings:
+            'useBackend': _settings.useBackend,
+            'backendUrl': _settings.backendUrl,
+            'backendToken': _settings.backendToken,
+            'backendAllowSelfSigned': _settings.backendAllowSelfSigned,
+            'autoSyncEnabled': _settings.autoSyncEnabled,
+            'autoSyncIntervalMinutes': _settings.autoSyncIntervalMinutes,
+            'debugLogging': _settings.debugLogging,
+            'debugLogPath': _settings.debugLogPath,
+            'syncAccessToken': _settings.syncAccessToken,
+            'syncRefreshToken': _settings.syncRefreshToken,
+          });
+          await _storage.saveSettings(_settings);
+        }
+      } catch (_) {
+        // Non-fatal — proceed with local settings if the pull fails.
+      }
 
       // Load conversations from the backend
       final convs = await _backend!.fetchConversations();
