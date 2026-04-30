@@ -82,6 +82,7 @@ class _McpServersScreenState extends State<McpServersScreen> {
                     fetching: provider.fetchingForServer(server.id),
                     error: provider.errorForServer(server.id),
                     usingAway: provider.serverUsingAway(server.id),
+                    inBackendMode: provider.settings.useBackend,
                     detectedTransport:
                         provider.detectedTransportForServer(server.id),
                     onChanged: _updateServer,
@@ -168,6 +169,7 @@ class _McpServerCard extends StatefulWidget {
   final bool fetching;
   final String? error;
   final bool usingAway;
+  final bool inBackendMode;
   /// When transport is [McpTransport.auto], shows which protocol was detected.
   final String? detectedTransport;
   final ValueChanged<McpServer> onChanged;
@@ -181,6 +183,7 @@ class _McpServerCard extends StatefulWidget {
     required this.fetching,
     required this.error,
     required this.usingAway,
+    required this.inBackendMode,
     this.detectedTransport,
     required this.onChanged,
     required this.onDelete,
@@ -275,23 +278,27 @@ class _McpServerCardState extends State<_McpServerCard> {
             hint: 'http://192.168.1.x:4242',
             helper: 'Home / local network',
             onCommit: _commit,
-            trailing: widget.server.baseUrlAway.isNotEmpty && !widget.usingAway
+            trailing: !widget.inBackendMode &&
+                    widget.server.baseUrlAway.isNotEmpty &&
+                    !widget.usingAway
                 ? _ActiveBadge(label: 'active', cs: cs)
                 : null,
           ),
-          const Divider(height: 1),
+          if (!widget.inBackendMode) ...[
+            const Divider(height: 1),
 
-          // ── Away URL ─────────────────────────────────────────────────────
-          _UrlField(
-            label: 'Away URL',
-            controller: _awayCtrl,
-            hint: 'http://100.x.x.x:4242',
-            helper: 'VPN / remote — optional',
-            onCommit: _commit,
-            trailing: widget.usingAway
-                ? _ActiveBadge(label: 'active', cs: cs)
-                : null,
-          ),
+            // ── Away URL ───────────────────────────────────────────────────
+            _UrlField(
+              label: 'Away URL',
+              controller: _awayCtrl,
+              hint: 'http://100.x.x.x:4242',
+              helper: 'VPN / remote — optional',
+              onCommit: _commit,
+              trailing: widget.usingAway
+                  ? _ActiveBadge(label: 'active', cs: cs)
+                  : null,
+            ),
+          ],
           const Divider(height: 1),
 
           // ── Transport selector ────────────────────────────────────────────

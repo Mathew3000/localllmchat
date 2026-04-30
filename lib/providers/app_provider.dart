@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import '../models/conversation.dart';
 import '../models/mcp_server.dart';
 import '../models/message.dart';
@@ -50,6 +51,7 @@ class AppProvider extends ChangeNotifier {
   String? _streamingBackendConvId;
   bool _backendConnecting = false;
   String? _backendConnectError;
+  bool _backendUsingAway = false;
 
   // ── Message queue ─────────────────────────────────────────────────────────
   /// Messages waiting to be sent once the current run finishes.
@@ -117,6 +119,7 @@ class AppProvider extends ChangeNotifier {
   bool get backendConnecting => _backendConnecting;
   String? get backendConnectError => _backendConnectError;
   bool get backendConnected => _backend?.isConnected ?? false;
+  bool get backendUsingAway => _backendUsingAway;
   bool get backendConfigured =>
       _settings.backendUrl.isNotEmpty && _settings.backendToken.isNotEmpty;
 
@@ -604,6 +607,42 @@ class AppProvider extends ChangeNotifier {
 
   // ── Backend server ────────────────────────────────────────────────────────
 
+  /// Persists the backend away URL immediately (no full settings save needed).
+  Future<void> setBackendAwayUrl(String url) async {
+    _settings = _settings.copyWith(backendAwayUrl: url);
+    await _storage.saveSettings(_settings);
+    notifyListeners();
+  }
+
+  /// Returns the backend URL to use, trying [backendUrl] (home) first.
+  /// If unreachable and [backendAwayUrl] is set, falls back to away.
+  Future<String> _resolveBackendUrl() async {
+    final home = _settings.backendUrl;
+    final away = _settings.backendAwayUrl;
+    if (away.isEmpty) {
+      _backendUsingAway = false;
+      return home;
+    }
+    try {
+      final base = home.trimRight().replaceAll(RegExp(r'/$'), '');
+      final client = _settings.backendAllowSelfSigned
+          ? IOClient(HttpClient()..badCertificateCallback = (_, __, ___) => true)
+          : http.Client();
+      try {
+        await client
+            .get(Uri.parse('$base/health'))
+            .timeout(const Duration(milliseconds: 1500));
+        _backendUsingAway = false;
+        return home;
+      } finally {
+        client.close();
+      }
+    } catch (_) {
+      _backendUsingAway = true;
+      return away;
+    }
+  }
+
   Future<void> _connectBackend() async {
     if (_backendConnecting) return;
     _backendConnecting = true;
@@ -612,8 +651,9 @@ class AppProvider extends ChangeNotifier {
 
     try {
       _backend?.dispose();
+      final activeUrl = await _resolveBackendUrl();
       _backend = BackendService(
-        baseUrl: _settings.backendUrl,
+        baseUrl: activeUrl,
         token: _settings.backendToken,
         allowSelfSigned: _settings.backendAllowSelfSigned,
       );
@@ -671,6 +711,9 @@ class AppProvider extends ChangeNotifier {
     _streamingBackendMsg = null;
     _streamingBackendConvId = null;
   }
+
+  /// Reconnects to the backend using the stored token (no re-authentication).
+  Future<void> backendReconnect() => _connectBackend();
 
   /// Login to the backend server and connect.
   Future<void> backendLogin(
@@ -1524,6 +1567,7 @@ class AppProvider extends ChangeNotifier {
         backendUrl: _settings.backendUrl,
         backendToken: _settings.backendToken,
         backendAllowSelfSigned: _settings.backendAllowSelfSigned,
+        backendAwayUrl: _settings.backendAwayUrl,
         autoSyncEnabled: _settings.autoSyncEnabled,
         autoSyncIntervalMinutes: _settings.autoSyncIntervalMinutes,
         debugLogging: _settings.debugLogging,

@@ -97,6 +97,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         backendUrl: s.backendUrl,
         backendToken: s.backendToken,
         backendAllowSelfSigned: s.backendAllowSelfSigned,
+        backendAwayUrl: s.backendAwayUrl,
       ),
     );
     if (mounted) {
@@ -152,26 +153,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ),
-              const Divider(height: 1),
               Consumer<AppProvider>(
                 builder: (_, provider, __) {
-                  final inBackendMode = provider.settings.useBackend;
-                  return Opacity(
-                    opacity: inBackendMode ? 0.45 : 1.0,
-                    child: _LabeledField(
-                      label: 'Away URL',
-                      child: TextField(
-                        controller: _baseUrlAwayController,
-                        keyboardType: TextInputType.url,
-                        enabled: !inBackendMode,
-                        decoration: InputDecoration(
-                          hintText: 'http://100.x.x.x:5000/v1',
-                          helperText: inBackendMode
-                              ? 'Not used — backend is always on the home network'
-                              : 'WireGuard / Tailscale — optional',
+                  if (provider.settings.useBackend) return const SizedBox.shrink();
+                  return Column(
+                    children: [
+                      const Divider(height: 1),
+                      _LabeledField(
+                        label: 'Away URL',
+                        child: TextField(
+                          controller: _baseUrlAwayController,
+                          keyboardType: TextInputType.url,
+                          decoration: const InputDecoration(
+                            hintText: 'http://100.x.x.x:5000/v1',
+                            helperText: 'WireGuard / Tailscale — optional',
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                   );
                 },
               ),
@@ -2234,6 +2233,7 @@ class _BackendCard extends StatefulWidget {
 
 class _BackendCardState extends State<_BackendCard> {
   final _urlCtrl = TextEditingController();
+  final _awayUrlCtrl = TextEditingController();
   final _userCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
   bool _passwordVisible = false;
@@ -2245,14 +2245,20 @@ class _BackendCardState extends State<_BackendCard> {
     super.initState();
     final s = context.read<AppProvider>().settings;
     _urlCtrl.text = s.backendUrl;
+    _awayUrlCtrl.text = s.backendAwayUrl;
   }
 
   @override
   void dispose() {
     _urlCtrl.dispose();
+    _awayUrlCtrl.dispose();
     _userCtrl.dispose();
     _passCtrl.dispose();
     super.dispose();
+  }
+
+  void _saveAwayUrl() {
+    context.read<AppProvider>().setBackendAwayUrl(_awayUrlCtrl.text.trim());
   }
 
   Future<void> _doLogin(bool register) async {
@@ -2305,8 +2311,7 @@ class _BackendCardState extends State<_BackendCard> {
                 ? (v) async {
                     await p.updateSettings(s.copyWith(useBackend: v));
                     if (v && !p.backendConnected) {
-                      await p.backendLogin(
-                          s.backendUrl, '', ''); // reconnect with stored token
+                      await p.backendReconnect();
                     }
                   }
                 : null, // disabled until logged in
@@ -2326,9 +2331,22 @@ class _BackendCardState extends State<_BackendCard> {
                   keyboardType: TextInputType.url,
                   enabled: !loggedIn,
                   decoration: const InputDecoration(
-                    labelText: 'Backend URL',
+                    labelText: 'Home URL',
                     hintText: 'https://192.168.1.50',
+                    helperText: 'LAN address',
                   ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _awayUrlCtrl,
+                  keyboardType: TextInputType.url,
+                  decoration: const InputDecoration(
+                    labelText: 'Away URL',
+                    hintText: 'https://vpn.example.com',
+                    helperText: 'VPN / Tailscale — used when Home URL is unreachable',
+                  ),
+                  onSubmitted: (_) => _saveAwayUrl(),
+                  onTapOutside: (_) => _saveAwayUrl(),
                 ),
                 const SizedBox(height: 4),
                 SwitchListTile(
@@ -2429,12 +2447,16 @@ class _BackendCardState extends State<_BackendCard> {
                 color: p.backendConnected ? cs.primary : cs.error,
               ),
               title: Text(p.backendConnected
-                  ? 'Connected to ${s.backendUrl}'
+                  ? 'Connected to ${p.backendUsingAway && s.backendAwayUrl.isNotEmpty ? s.backendAwayUrl : s.backendUrl}'
                   : 'Disconnected'),
               subtitle: p.backendConnectError != null
                   ? Text(p.backendConnectError!,
                       style: TextStyle(color: cs.error, fontSize: 12))
-                  : null,
+                  : p.backendUsingAway && s.backendAwayUrl.isNotEmpty
+                      ? Text('Using away URL',
+                          style: TextStyle(
+                              color: cs.secondary, fontSize: 12))
+                      : null,
               trailing: TextButton(
                 onPressed: p.backendLogout,
                 child: const Text('Logout'),

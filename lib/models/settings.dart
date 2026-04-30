@@ -71,6 +71,9 @@ class AppSettings {
   /// When true, TLS certificate errors are ignored (for self-signed LAN certs).
   /// Device-local — excluded from sync.
   final bool backendAllowSelfSigned;
+  /// Away URL for the backend server (VPN / Tailscale).  Used automatically
+  /// when [backendUrl] (home) is unreachable.  Device-local — excluded from sync.
+  final String backendAwayUrl;
 
   const AppSettings({
     this.baseUrlHome = 'http://192.168.1.1:5000/v1',
@@ -103,6 +106,7 @@ class AppSettings {
     this.backendUrl = '',
     this.backendToken = '',
     this.backendAllowSelfSigned = false,
+    this.backendAwayUrl = '',
   });
 
   /// The URL that is currently active based on [useAwayUrl].
@@ -145,6 +149,7 @@ class AppSettings {
     String? backendUrl,
     String? backendToken,
     bool? backendAllowSelfSigned,
+    String? backendAwayUrl,
   }) =>
       AppSettings(
         baseUrlHome: baseUrlHome ?? this.baseUrlHome,
@@ -187,6 +192,7 @@ class AppSettings {
         backendToken: backendToken ?? this.backendToken,
         backendAllowSelfSigned:
             backendAllowSelfSigned ?? this.backendAllowSelfSigned,
+        backendAwayUrl: backendAwayUrl ?? this.backendAwayUrl,
       );
 
   Map<String, dynamic> toJson() => {
@@ -219,6 +225,7 @@ class AppSettings {
         'backendUrl': backendUrl,
         'backendToken': backendToken,
         'backendAllowSelfSigned': backendAllowSelfSigned,
+        'backendAwayUrl': backendAwayUrl,
       };
 
   /// Settings JSON for the sync payload — excludes device-specific credentials
@@ -238,6 +245,7 @@ class AppSettings {
     j.remove('backendUrl');
     j.remove('backendToken');
     j.remove('backendAllowSelfSigned');
+    j.remove('backendAwayUrl');
     return j;
   }
 
@@ -293,6 +301,7 @@ class AppSettings {
       backendToken: json['backendToken'] as String? ?? '',
       backendAllowSelfSigned:
           json['backendAllowSelfSigned'] as bool? ?? false,
+      backendAwayUrl: json['backendAwayUrl'] as String? ?? '',
     );
   }
 }
