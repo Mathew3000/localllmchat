@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -132,16 +133,7 @@ class MessageBubble extends StatelessWidget {
                       ],
                     ),
                     child: isUser
-                        ? SelectableText(
-                            message.content,
-                            style: TextStyle(
-                              color: userBubbleColor != null
-                                  ? onColor(userBubbleColor!)
-                                  : colorScheme.onPrimary,
-                              fontSize: 15,
-                              height: 1.4,
-                            ),
-                          )
+                        ? _buildUserContent(context, colorScheme)
                         : _buildAssistantContent(context, theme, highlightColor),
                   ),
                 ),
@@ -199,6 +191,55 @@ class MessageBubble extends StatelessWidget {
       ),
       child: _AssistantContent(
           message: message, highlightColor: highlightColor),
+    );
+  }
+
+  Widget _buildUserContent(BuildContext context, ColorScheme cs) {
+    final textColor =
+        userBubbleColor != null ? onColor(userBubbleColor!) : cs.onPrimary;
+    final textStyle = TextStyle(color: textColor, fontSize: 15, height: 1.4);
+    final hasImages = message.images.isNotEmpty;
+    final hasText = message.content.isNotEmpty;
+
+    if (!hasImages) {
+      return SelectableText(message.content, style: textStyle);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Images grid (max 2 per row)
+        Wrap(
+          spacing: 4,
+          runSpacing: 4,
+          alignment: WrapAlignment.end,
+          children: message.images.map((dataUrl) {
+            try {
+              final base64Data = dataUrl.contains(',')
+                  ? dataUrl.split(',').last
+                  : dataUrl;
+              final bytes = base64Decode(base64Data);
+              return ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.memory(
+                  bytes,
+                  width: 160,
+                  height: 160,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image),
+                ),
+              );
+            } catch (_) {
+              return const Icon(Icons.broken_image);
+            }
+          }).toList(),
+        ),
+        if (hasText) ...[
+          const SizedBox(height: 6),
+          SelectableText(message.content, style: textStyle),
+        ],
+      ],
     );
   }
 

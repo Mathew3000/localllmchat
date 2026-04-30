@@ -18,6 +18,16 @@ import '../services/streaming_keep_alive.dart';
 import '../services/sync_service.dart';
 import '../services/debug_logger.dart';
 
+// ── Queued-message data class ─────────────────────────────────────────────────
+
+class _QueuedMessage {
+  final String content;
+  final List<String> images;
+  const _QueuedMessage(this.content, {this.images = const []});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 class AppProvider extends ChangeNotifier {
   final StorageService _storage = StorageService();
 
@@ -33,7 +43,7 @@ class AppProvider extends ChangeNotifier {
 
   // ── Message queue ─────────────────────────────────────────────────────────
   /// Messages waiting to be sent once the current run finishes.
-  final List<String> _messageQueue = [];
+  final List<_QueuedMessage> _messageQueue = [];
 
   bool _secretsUnlocked = false;
 
@@ -85,7 +95,9 @@ class AppProvider extends ChangeNotifier {
   List<String> get availableModels => _availableModels;
   bool get fetchingModels => _fetchingModels;
   bool get isStreaming => _isStreaming;
-  List<String> get messageQueue => List.unmodifiable(_messageQueue);
+  /// Text content of queued messages, for display in the queue strip.
+  List<String> get messageQueue =>
+      List.unmodifiable(_messageQueue.map((m) => m.content).toList());
   bool get secretsUnlocked => _secretsUnlocked;
   bool get hasSecretPassword => _settings.secretPasswordHash.isNotEmpty;
   bool get usingAwayUrl => _usingAway;
@@ -609,11 +621,11 @@ class AppProvider extends ChangeNotifier {
 
   // ── Chat ──────────────────────────────────────────────────────────────────
 
-  /// Adds [text] to the queue without starting a new run.
-  void enqueueMessage(String text) {
+  /// Adds a message to the queue without starting a new run.
+  void enqueueMessage(String text, {List<String> images = const []}) {
     final t = text.trim();
-    if (t.isEmpty) return;
-    _messageQueue.add(t);
+    if (t.isEmpty && images.isEmpty) return;
+    _messageQueue.add(_QueuedMessage(t, images: images));
     notifyListeners();
   }
 
@@ -635,26 +647,29 @@ class AppProvider extends ChangeNotifier {
     if (_messageQueue.isEmpty) return;
     final next = _messageQueue.removeAt(0);
     notifyListeners();
-    await sendMessage(next);
+    await sendMessage(next.content, images: next.images);
   }
 
-  Future<void> sendMessage(String content) async {
-    if (content.trim().isEmpty) return;
+  Future<void> sendMessage(String content,
+      {List<String> images = const []}) async {
+    if (content.trim().isEmpty && images.isEmpty) return;
     // If a run is already in progress, park the message in the queue.
     if (_isStreaming) {
-      enqueueMessage(content);
+      enqueueMessage(content, images: images);
       return;
     }
 
     if (_activeConversation == null) newConversation();
 
-    final userMsg = Message(role: Role.user, content: content.trim());
+    final userMsg = Message(
+        role: Role.user, content: content.trim(), images: images);
     _activeConversation!.messages.add(userMsg);
 
     if (_activeConversation!.title == 'New Chat') {
       final t = content.trim();
-      _activeConversation!.title =
-          t.length > 40 ? '${t.substring(0, 40)}…' : t;
+      _activeConversation!.title = t.isNotEmpty
+          ? (t.length > 40 ? '${t.substring(0, 40)}…' : t)
+          : '📷 Image${images.length > 1 ? 's' : ''}';
     }
 
     _isStreaming = true;

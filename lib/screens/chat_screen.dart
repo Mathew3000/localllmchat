@@ -176,8 +176,8 @@ class _ChatScreenState extends State<ChatScreen> {
         Consumer<AppProvider>(
           builder: (_, p, __) => ChatInput(
             isStreaming: p.isStreaming,
-            onSend: (text) {
-              p.sendMessage(text);
+            onSend: (text, images) {
+              p.sendMessage(text, images: images);
               _scrollToBottom();
             },
             onCancel: p.cancelStream,

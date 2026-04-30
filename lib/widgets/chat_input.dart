@@ -1,10 +1,26 @@
+import 'dart:convert';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
+// ── Attached image data class ─────────────────────────────────────────────────
+
+class AttachedImage {
+  final Uint8List bytes;
+  final String mime; // e.g. "image/jpeg"
+  const AttachedImage({required this.bytes, required this.mime});
+
+  /// Converts to a data URL for the API and storage.
+  String toDataUrl() =>
+      'data:$mime;base64,${base64Encode(bytes)}';
+}
+
+// ── Public widget ─────────────────────────────────────────────────────────────
 
 class ChatInput extends StatefulWidget {
   final bool isStreaming;
   final VoidCallback? onCancel;
-  final void Function(String) onSend;
+  final void Function(String text, List<String> images) onSend;
 
   /// Current contents of the message queue — shown as chips above the field.
   final List<String> messageQueue;
@@ -29,6 +45,7 @@ class _ChatInputState extends State<ChatInput> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
   bool _hasText = false;
+  final List<AttachedImage> _images = [];
 
   @override
   void initState() {
@@ -57,18 +74,68 @@ class _ChatInputState extends State<ChatInput> {
     super.dispose();
   }
 
+  // ── Image helpers ──────────────────────────────────────────────────────────
+
+  Future<void> _pickImages() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: true,
+      withData: true,
+    );
+    if (result == null) return;
+    final picked = <AttachedImage>[];
+    for (final f in result.files) {
+      if (f.bytes == null) continue;
+      final ext = (f.extension ?? 'jpg').toLowerCase();
+      final mime = _mimeFromExt(ext);
+      picked.add(AttachedImage(bytes: f.bytes!, mime: mime));
+    }
+    if (picked.isNotEmpty) {
+      setState(() => _images.addAll(picked));
+    }
+  }
+
+  void _addImageBytes(Uint8List bytes, String mime) {
+    setState(() => _images.add(AttachedImage(bytes: bytes, mime: mime)));
+  }
+
+  void _removeImage(int index) {
+    setState(() => _images.removeAt(index));
+  }
+
+  static String _mimeFromExt(String ext) {
+    switch (ext) {
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'webp':
+        return 'image/webp';
+      default:
+        return 'image/jpeg';
+    }
+  }
+
+  // ── Send ───────────────────────────────────────────────────────────────────
+
   void _submit() {
     final text = _controller.text.trim();
-    if (text.isEmpty) return;
-    widget.onSend(text);
+    if (text.isEmpty && _images.isEmpty) return;
+    final dataUrls = _images.map((img) => img.toDataUrl()).toList();
+    widget.onSend(text, dataUrls);
     _controller.clear();
+    setState(() => _images.clear());
   }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final hasQueue = widget.messageQueue.isNotEmpty;
+    final hasImages = _images.isNotEmpty;
+    final canSend = _hasText || hasImages;
 
     return Container(
       padding: EdgeInsets.fromLTRB(
@@ -86,7 +153,7 @@ class _ChatInputState extends State<ChatInput> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // ── Queue chip strip ─────────────────────────────────────────────
+          // ── Queue chip strip ───────────────────────────────────────────────
           AnimatedSize(
             duration: const Duration(milliseconds: 200),
             curve: Curves.easeOut,
@@ -99,10 +166,40 @@ class _ChatInputState extends State<ChatInput> {
                 : const SizedBox.shrink(),
           ),
 
-          // ── Text field + action button ───────────────────────────────────
+          // ── Image thumbnail strip ──────────────────────────────────────────
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+            child: hasImages
+                ? _ImageStrip(
+                    images: _images,
+                    onRemove: _removeImage,
+                  )
+                : const SizedBox.shrink(),
+          ),
+
+          // ── Text field + buttons ───────────────────────────────────────────
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
+              // Image attach button
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Tooltip(
+                  message: 'Attach image',
+                  child: IconButton(
+                    onPressed: _pickImages,
+                    icon: Icon(
+                      Icons.image_outlined,
+                      color: hasImages
+                          ? cs.primary
+                          : cs.onSurfaceVariant.withValues(alpha: 0.7),
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+              ),
+              // Text field
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
@@ -114,11 +211,26 @@ class _ChatInputState extends State<ChatInput> {
                     focusNode: _focusNode,
                     maxLines: 6,
                     minLines: 1,
-                    // Always editable — typing while streaming queues the message.
                     textCapitalization: TextCapitalization.sentences,
                     keyboardType: TextInputType.multiline,
                     textInputAction: TextInputAction.newline,
                     style: TextStyle(color: cs.onSurface, fontSize: 15),
+                    // Allow Android keyboards (e.g. GBoard) to insert images.
+                    contentInsertionConfiguration:
+                        ContentInsertionConfiguration(
+                      onContentInserted: (KeyboardInsertedContent data) {
+                        final bytes = data.data;
+                        if (bytes != null) {
+                          _addImageBytes(bytes, data.mimeType);
+                        }
+                      },
+                      allowedMimeTypes: const [
+                        'image/png',
+                        'image/jpeg',
+                        'image/gif',
+                        'image/webp',
+                      ],
+                    ),
                     decoration: InputDecoration(
                       hintText: widget.isStreaming
                           ? (hasQueue
@@ -138,13 +250,69 @@ class _ChatInputState extends State<ChatInput> {
               const SizedBox(width: 8),
               _ActionButton(
                 isStreaming: widget.isStreaming,
-                hasText: _hasText,
+                canSend: canSend,
                 onSend: _submit,
                 onCancel: widget.onCancel,
               ),
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Image thumbnail strip ─────────────────────────────────────────────────────
+
+class _ImageStrip extends StatelessWidget {
+  final List<AttachedImage> images;
+  final void Function(int) onRemove;
+
+  const _ImageStrip({required this.images, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: images.asMap().entries.map((e) {
+            final idx = e.key;
+            final img = e.value;
+            return Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Stack(
+                alignment: Alignment.topRight,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.memory(
+                      img.bytes,
+                      width: 72,
+                      height: 72,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => onRemove(idx),
+                    child: Container(
+                      margin: const EdgeInsets.all(3),
+                      width: 18,
+                      height: 18,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.65),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.close_rounded,
+                          size: 12, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        ),
       ),
     );
   }
@@ -304,13 +472,13 @@ class _QueueChip extends StatelessWidget {
 
 class _ActionButton extends StatelessWidget {
   final bool isStreaming;
-  final bool hasText;
+  final bool canSend;
   final VoidCallback onSend;
   final VoidCallback? onCancel;
 
   const _ActionButton({
     required this.isStreaming,
-    required this.hasText,
+    required this.canSend,
     required this.onSend,
     this.onCancel,
   });
@@ -319,8 +487,8 @@ class _ActionButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    // Streaming + text typed → queue button
-    if (isStreaming && hasText) {
+    // Streaming + can send → queue button
+    if (isStreaming && canSend) {
       return _CircleButton(
         onTap: onSend,
         color: cs.secondary,
@@ -330,7 +498,7 @@ class _ActionButton extends StatelessWidget {
       );
     }
 
-    // Streaming + no text → stop button
+    // Streaming + nothing to send → stop button
     if (isStreaming) {
       return _CircleButton(
         onTap: onCancel,
@@ -342,11 +510,11 @@ class _ActionButton extends StatelessWidget {
 
     // Not streaming
     return _CircleButton(
-      onTap: hasText ? onSend : null,
-      color: hasText ? cs.primary : cs.surfaceContainerHighest,
+      onTap: canSend ? onSend : null,
+      color: canSend ? cs.primary : cs.surfaceContainerHighest,
       icon: Icon(
         Icons.arrow_upward_rounded,
-        color: hasText ? cs.onPrimary : cs.onSurfaceVariant,
+        color: canSend ? cs.onPrimary : cs.onSurfaceVariant,
         size: 22,
       ),
       tooltip: 'Send',
@@ -381,7 +549,7 @@ class _CircleButton extends StatelessWidget {
             color: color,
             shape: BoxShape.circle,
           ),
-          child: icon,
+          child: Center(child: icon),
         ),
       ),
     );

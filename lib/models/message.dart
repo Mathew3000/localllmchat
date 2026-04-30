@@ -18,6 +18,11 @@ class Message {
   /// MCP content items (may include images). Kept in-memory only.
   List<McpContent>? toolContent;
 
+  // ── Image attachments (user messages only) ─────────────────────────────────
+  /// Data-URL strings attached by the user, e.g. `"data:image/jpeg;base64,…"`.
+  /// Sent to the model as multimodal content parts.
+  final List<String> images;
+
   Message({
     String? id,
     required this.role,
@@ -27,6 +32,7 @@ class Message {
     this.toolCallId,
     this.toolName,
     this.toolContent,
+    this.images = const [],
   }) : id = id ?? const Uuid().v4();
 
   bool get hasToolCalls => toolCalls != null && toolCalls!.isNotEmpty;
@@ -61,6 +67,20 @@ class Message {
         'tool_calls': toolCalls!.map((t) => t.toApiJson()).toList(),
       };
     }
+
+    // Multimodal: build content array when images are attached.
+    if (role == Role.user && images.isNotEmpty) {
+      final parts = <Map<String, dynamic>>[];
+      for (final img in images) {
+        parts.add({'type': 'image_url', 'image_url': {'url': img}});
+      }
+      final text = contentForApi;
+      if (text.isNotEmpty) {
+        parts.add({'type': 'text', 'text': text});
+      }
+      return {'role': 'user', 'content': parts};
+    }
+
     // Strip thinking blocks — the model must not see its own reasoning history.
     return {'role': role.name, 'content': contentForApi};
   }
@@ -93,6 +113,7 @@ class Message {
       'role': role.name,
       'content': content,
       'isStreaming': false,
+      if (images.isNotEmpty) 'images': images,
     };
   }
 
@@ -126,6 +147,10 @@ class Message {
           ?.map((t) =>
               ToolCall.fromStorageJson(t as Map<String, dynamic>))
           .toList(),
+      images: (json['images'] as List<dynamic>?)
+              ?.map((e) => e as String)
+              .toList() ??
+          const [],
     );
   }
 }
