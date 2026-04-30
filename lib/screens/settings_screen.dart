@@ -90,6 +90,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         syncLastAt: s.syncLastAt,
         autoSyncEnabled: s.autoSyncEnabled,
         autoSyncIntervalMinutes: s.autoSyncIntervalMinutes,
+        injectDateTime: s.injectDateTime,
         debugLogging: s.debugLogging,
         debugLogPath: s.debugLogPath,
       ),

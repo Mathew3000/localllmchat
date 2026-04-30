@@ -603,6 +603,16 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void renameConversation(String id, String newTitle) {
+    final title = newTitle.trim();
+    if (title.isEmpty) return;
+    final conv = _conversations.firstWhere((c) => c.id == id,
+        orElse: () => throw StateError('not found'));
+    conv.title = title;
+    _persistConversations();
+    notifyListeners();
+  }
+
   /// Deletes the message with [id] from the active conversation.
   /// When [andFollowingResponse] is true, also removes all consecutive
   /// non-user messages that immediately follow it (the AI turn).

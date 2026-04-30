@@ -569,6 +569,7 @@ class _ConversationListView extends StatelessWidget {
                 if (closeDrawer) Navigator.pop(context);
               },
               onDelete: () => p.deleteConversation(conv.id),
+              onRename: (title) => p.renameConversation(conv.id, title),
               onToggleSecret:
                   p.hasSecretPassword && p.secretsUnlocked
                       ? () => p.toggleConversationSecret(conv.id)
@@ -731,6 +732,7 @@ class _ConversationTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onDelete;
   final VoidCallback? onToggleSecret;
+  final void Function(String newTitle) onRename;
 
   const _ConversationTile({
     required this.conv,
@@ -738,6 +740,7 @@ class _ConversationTile extends StatelessWidget {
     required this.showSecretBadge,
     required this.onTap,
     required this.onDelete,
+    required this.onRename,
     this.onToggleSecret,
   });
 
@@ -796,6 +799,40 @@ class _ConversationTile extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _showRenameDialog(BuildContext context) async {
+    final ctrl = TextEditingController(text: conv.title);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Rename conversation'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 80,
+          decoration: const InputDecoration(
+            labelText: 'Name',
+            border: OutlineInputBorder(),
+            counterText: '',
+          ),
+          textInputAction: TextInputAction.done,
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, ctrl.text),
+              child: const Text('Rename')),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (result != null && result.trim().isNotEmpty) {
+      onRename(result.trim());
+    }
   }
 
   void _showContextSheet(BuildContext outerContext) {
@@ -883,6 +920,14 @@ class _ConversationTile extends StatelessWidget {
                   onToggleSecret!();
                 },
               ),
+            ListTile(
+              leading: Icon(Icons.edit_outlined, color: cs.primary),
+              title: const Text('Rename'),
+              onTap: () {
+                Navigator.pop(outerContext);
+                _showRenameDialog(outerContext);
+              },
+            ),
             ListTile(
               leading:
                   Icon(Icons.delete_outline_rounded, color: cs.error),
