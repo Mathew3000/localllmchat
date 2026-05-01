@@ -47,7 +47,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isDesktop =
+    // Mobile platforms always use the drawer regardless of screen width.
+    final platform = Theme.of(context).platform;
+    final isMobile = platform == TargetPlatform.android ||
+        platform == TargetPlatform.iOS;
+    final isDesktop = !isMobile &&
         MediaQuery.sizeOf(context).width >= _kSidebarBreakpoint;
 
     return Consumer<AppProvider>(
