@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import '../models/conversation.dart';
@@ -30,7 +31,7 @@ class _QueuedMessage {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-class AppProvider extends ChangeNotifier {
+class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   final StorageService _storage = StorageService();
 
   AppSettings _settings = const AppSettings();
@@ -182,7 +183,48 @@ class AppProvider extends ChangeNotifier {
       : _conversations.where((c) => !c.isSecret).toList();
 
   AppProvider() {
+    WidgetsBinding.instance.addObserver(this);
     _init();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _disconnectBackend();
+    super.dispose();
+  }
+
+  // ── App lifecycle ─────────────────────────────────────────────────────────
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _onAppResumed();
+  }
+
+  /// Called when the app returns to the foreground.
+  /// Reconnects the backend WebSocket if it dropped (e.g. screen locked while
+  /// idle — the foreground service only runs during active generation so idle
+  /// connections are not protected).
+  void _onAppResumed() {
+    if (!_settings.useBackend || _settings.backendToken.isEmpty) return;
+    if (_backend == null) {
+      // Service was fully torn down — do a full reconnect.
+      _connectBackend();
+      return;
+    }
+    if (backendConnected) return; // still alive, nothing to do
+
+    // WebSocket dropped — reconnect lightly without re-fetching everything.
+    _backend!.connect().then((_) {
+      notifyListeners();
+      // Reload active conversation: generation may have completed while offline.
+      if (_activeConversation != null) {
+        _loadConversationMessages(_activeConversation!.id);
+      }
+    }).catchError((_) {
+      // Reconnect failed — show disconnected state; user can retry from settings.
+      notifyListeners();
+    });
   }
 
   Future<void> _init() async {
