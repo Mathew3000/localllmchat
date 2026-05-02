@@ -21,6 +21,8 @@ class ConnectionManager:
         self._connections: dict[str, set[WebSocket]] = defaultdict(set)
         # conversation_id -> background asyncio.Task
         self._tasks: dict[str, asyncio.Task] = {}
+        # "conv_id:call_id" -> asyncio.Future[dict]  (tool-result relay)
+        self._tool_futures: dict[str, "asyncio.Future[dict]"] = {}
 
     # ── Connection lifecycle ──────────────────────────────────────────────────
 
@@ -55,10 +57,39 @@ class ConnectionManager:
         task = self._tasks.pop(conversation_id, None)
         if task and not task.done():
             task.cancel()
+        self.cancel_tool_futures(conversation_id)
 
     def is_generating(self, conversation_id: str) -> bool:
         task = self._tasks.get(conversation_id)
         return task is not None and not task.done()
+
+    # ── Tool-result relay ─────────────────────────────────────────────────────
+
+    def create_tool_result_future(
+        self, conv_id: str, call_id: str
+    ) -> "asyncio.Future[dict]":
+        """Register a future that resolves when the client returns a tool result."""
+        key = f"{conv_id}:{call_id}"
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future[dict] = loop.create_future()
+        self._tool_futures[key] = fut
+        return fut
+
+    def resolve_tool_result(self, conv_id: str, call_id: str, result: dict) -> None:
+        """Called by the WS router when the client sends a tool_result message."""
+        key = f"{conv_id}:{call_id}"
+        fut = self._tool_futures.pop(key, None)
+        if fut and not fut.done():
+            fut.set_result(result)
+
+    def cancel_tool_futures(self, conv_id: str) -> None:
+        """Cancel all pending tool futures for a conversation (on cancel / error)."""
+        prefix = f"{conv_id}:"
+        keys = [k for k in list(self._tool_futures) if k.startswith(prefix)]
+        for key in keys:
+            fut = self._tool_futures.pop(key, None)
+            if fut and not fut.done():
+                fut.cancel()
 
 
 # Module-level singleton shared across all routers / services.

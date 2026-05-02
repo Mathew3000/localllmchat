@@ -50,6 +50,22 @@ class BECancelled extends BackendEvent {
   const BECancelled({required this.conversationId});
 }
 
+class BEToolCall extends BackendEvent {
+  final String conversationId;
+  final String messageId;
+  final String callId;
+  final String name;
+  /// Raw JSON string of the tool arguments.
+  final String arguments;
+  const BEToolCall({
+    required this.conversationId,
+    required this.messageId,
+    required this.callId,
+    required this.name,
+    required this.arguments,
+  });
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 class BackendService {
@@ -245,6 +261,14 @@ class BackendService {
           _events.add(BECancelled(
             conversationId: msg['conversation_id'] as String,
           ));
+        case 'tool_call':
+          _events.add(BEToolCall(
+            conversationId: msg['conversation_id'] as String,
+            messageId: msg['message_id'] as String,
+            callId: msg['call_id'] as String,
+            name: msg['name'] as String,
+            arguments: msg['arguments'] as String? ?? '{}',
+          ));
         case 'pong':
           break; // ignore keepalive replies
       }
@@ -268,6 +292,7 @@ class BackendService {
     String content,
     List<String> images, {
     String? messageId,
+    List<Map<String, dynamic>> tools = const [],
   }) async {
     await ensureConnected();
     _send({
@@ -276,6 +301,24 @@ class BackendService {
       'content': content,
       'images': images,
       if (messageId != null) 'message_id': messageId,
+      if (tools.isNotEmpty) 'tools': tools,
+    });
+  }
+
+  /// Send a tool-execution result back to the backend (MCP relay).
+  Future<void> sendToolResult(
+    String conversationId,
+    String callId,
+    String content, {
+    bool isError = false,
+  }) async {
+    await ensureConnected();
+    _send({
+      'type': 'tool_result',
+      'conversation_id': conversationId,
+      'call_id': callId,
+      'content': content,
+      'is_error': isError,
     });
   }
 

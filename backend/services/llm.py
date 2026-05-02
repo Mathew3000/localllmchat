@@ -5,7 +5,10 @@ run_generation() is the core loop:
   1. Loads the conversation history from the DB.
   2. Streams tokens from the configured LLM backend.
   3. Pushes each token to all connected WebSocket clients via the hub.
-  4. On completion (or cancellation) saves the full assistant message to the DB.
+  4. If the LLM requests tool calls, sends tool_call events to the Flutter
+     client, waits for tool_result responses (via the hub relay), persists the
+     tool messages, then iterates back to step 1.
+  5. On completion (or cancellation) saves the full assistant message to the DB.
 
 If the client disconnects mid-stream the task keeps running and stores the
 result so the device receives the completed message on next load.
@@ -32,7 +35,11 @@ def _dt_string() -> str:
     return f"{now.strftime('%A')}, {now.day} {now.strftime('%B %Y, %H:%M')}"
 
 
-def _build_messages(history: list[Message], settings: dict) -> list[dict]:
+def _build_messages(
+    history: list[Message],
+    settings: dict,
+    tools_enabled: bool | None = None,
+) -> list[dict]:
     """Convert ORM message list to OpenAI chat/completions payload."""
     messages: list[dict] = []
 
@@ -42,7 +49,10 @@ def _build_messages(history: list[Message], settings: dict) -> list[dict]:
     if system_prompt.strip():
         messages.append({"role": "system", "content": system_prompt.strip()})
 
-    tools_enabled: bool = bool(settings.get("mcpServers"))  # rough heuristic
+    # When tools_enabled is not explicitly supplied, fall back to the old
+    # heuristic (mcpServers configured in settings).
+    if tools_enabled is None:
+        tools_enabled = bool(settings.get("mcpServers"))
 
     for msg in history:
         if msg.role == "system":
@@ -87,16 +97,26 @@ async def run_generation(
     user_id: str,
     conversation_id: str,
     settings: dict,
+    tools: list[dict] | None = None,
 ) -> None:
     """
     Background task: stream LLM response and persist the result.
     Designed to survive client disconnects — the task runs to completion
     regardless of WebSocket state.
+
+    When `tools` is non-empty the function implements a tool-call relay loop:
+    the LLM may request tool calls which are forwarded to the Flutter client
+    for execution; results flow back via the WebSocket hub and the loop
+    continues until the LLM produces a final text response.
     """
+    MAX_TOOL_ITERATIONS = 10
+
+    # Track for CancelledError / Exception handlers
     assistant_msg: Message | None = None
     content_buf: list[str] = []
     in_thinking = False
     thinking_closed = False
+    conv: Conversation | None = None
 
     async def _send(data: dict) -> None:
         """Fire-and-forget send; silently swallows send errors."""
@@ -116,14 +136,7 @@ async def run_generation(
             })
             return
 
-        result = await db.execute(
-            select(Message)
-            .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at)
-        )
-        history = list(result.scalars().all())
-
-        # ── Build request ─────────────────────────────────────────────────────
+        # ── Build LLM config ──────────────────────────────────────────────────
         # The app syncs the LLM endpoint as "baseUrlHome" (Away URL is irrelevant
         # for the backend — it lives on the same network as the LLM server).
         # Fall back to legacy "baseUrl" key for older settings payloads.
@@ -140,14 +153,6 @@ async def run_generation(
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-
-        payload = {
-            "model": model,
-            "messages": _build_messages(history, settings),
-            "stream": True,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
 
         # ── Create placeholder assistant message ──────────────────────────────
         assistant_msg = Message(
@@ -167,113 +172,262 @@ async def run_generation(
             "message_id": assistant_msg.id,
         })
 
-        # ── Stream from LLM ───────────────────────────────────────────────────
-        async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
-            async with client.stream(
-                "POST",
-                f"{base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-            ) as resp:
-                if resp.status_code != 200:
-                    body = await resp.aread()
-                    await _send({
-                        "type": "error",
-                        "conversation_id": conversation_id,
-                        "detail": f"LLM error {resp.status_code}: {body.decode()}",
-                    })
-                    await db.delete(assistant_msg)
-                    await db.commit()
-                    assistant_msg = None
-                    return
+        # ── Tool-call agentic loop ────────────────────────────────────────────
+        for _iteration in range(MAX_TOOL_ITERATIONS):
+            content_buf = []
+            tool_call_accum: dict[int, dict] = {}
+            in_thinking = False
+            thinking_closed = False
 
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[6:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        choices = chunk.get("choices", [])
-                        if not choices:
+            # Load current history, excluding the empty placeholder
+            result = await db.execute(
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .where(Message.id != assistant_msg.id)
+                .order_by(Message.created_at)
+            )
+            history = list(result.scalars().all())
+
+            payload: dict = {
+                "model": model,
+                "messages": _build_messages(
+                    history, settings, tools_enabled=bool(tools)
+                ),
+                "stream": True,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+
+            # ── Stream from LLM ───────────────────────────────────────────────
+            async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
+                async with client.stream(
+                    "POST",
+                    f"{base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as resp:
+                    if resp.status_code != 200:
+                        body = await resp.aread()
+                        await _send({
+                            "type": "error",
+                            "conversation_id": conversation_id,
+                            "detail": f"LLM error {resp.status_code}: {body.decode()}",
+                        })
+                        await db.delete(assistant_msg)
+                        await db.commit()
+                        assistant_msg = None
+                        return
+
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
                             continue
-                        delta = choices[0].get("delta", {})
+                        data = line[6:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            choices = chunk.get("choices", [])
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
 
-                        # Thinking tokens (Qwen3 / reasoning models)
-                        reasoning = delta.get("reasoning_content")
-                        if reasoning:
-                            if not in_thinking:
-                                tok = "<think>"
-                                content_buf.append(tok)
+                            # Accumulate tool call deltas (OpenAI streaming format)
+                            for tc in delta.get("tool_calls", []):
+                                idx = tc.get("index", 0)
+                                if idx not in tool_call_accum:
+                                    tool_call_accum[idx] = {
+                                        "id": "",
+                                        "name": "",
+                                        "arguments": "",
+                                    }
+                                if tc.get("id"):
+                                    tool_call_accum[idx]["id"] = tc["id"]
+                                fn = tc.get("function", {})
+                                if fn.get("name"):
+                                    tool_call_accum[idx]["name"] += fn["name"]
+                                if fn.get("arguments"):
+                                    tool_call_accum[idx]["arguments"] += fn["arguments"]
+
+                            # Thinking tokens (Qwen3 / reasoning models)
+                            reasoning = delta.get("reasoning_content")
+                            if reasoning:
+                                if not in_thinking:
+                                    tok = "<think>"
+                                    content_buf.append(tok)
+                                    await _send({
+                                        "type": "token",
+                                        "conversation_id": conversation_id,
+                                        "message_id": assistant_msg.id,
+                                        "content": tok,
+                                    })
+                                    in_thinking = True
+                                content_buf.append(reasoning)
                                 await _send({
                                     "type": "token",
                                     "conversation_id": conversation_id,
                                     "message_id": assistant_msg.id,
-                                    "content": tok,
+                                    "content": reasoning,
                                 })
-                                in_thinking = True
-                            content_buf.append(reasoning)
-                            await _send({
-                                "type": "token",
-                                "conversation_id": conversation_id,
-                                "message_id": assistant_msg.id,
-                                "content": reasoning,
-                            })
 
-                        # Regular content
-                        content = delta.get("content")
-                        if content:
-                            if in_thinking and not thinking_closed:
-                                tok = "</think>"
-                                content_buf.append(tok)
+                            # Regular content
+                            content = delta.get("content")
+                            if content:
+                                if in_thinking and not thinking_closed:
+                                    tok = "</think>"
+                                    content_buf.append(tok)
+                                    await _send({
+                                        "type": "token",
+                                        "conversation_id": conversation_id,
+                                        "message_id": assistant_msg.id,
+                                        "content": tok,
+                                    })
+                                    thinking_closed = True
+                                content_buf.append(content)
                                 await _send({
                                     "type": "token",
                                     "conversation_id": conversation_id,
                                     "message_id": assistant_msg.id,
-                                    "content": tok,
+                                    "content": content,
                                 })
-                                thinking_closed = True
-                            content_buf.append(content)
-                            await _send({
-                                "type": "token",
-                                "conversation_id": conversation_id,
-                                "message_id": assistant_msg.id,
-                                "content": content,
-                            })
-                    except Exception:
-                        pass  # malformed SSE chunk — skip
+                        except Exception:
+                            pass  # malformed SSE chunk — skip
 
-        # Close any still-open think block
-        if in_thinking and not thinking_closed:
-            tok = "</think>"
-            content_buf.append(tok)
+            # Close any still-open think block
+            if in_thinking and not thinking_closed:
+                tok = "</think>"
+                content_buf.append(tok)
+                await _send({
+                    "type": "token",
+                    "conversation_id": conversation_id,
+                    "message_id": assistant_msg.id,
+                    "content": tok,
+                })
+
+            # ── Handle tool calls ─────────────────────────────────────────────
+            if tool_call_accum and tools:
+                # Build tool_calls in canonical OpenAI format, ordered by index
+                tool_calls_list = [
+                    {
+                        "id": tool_call_accum[i]["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tool_call_accum[i]["name"],
+                            "arguments": tool_call_accum[i]["arguments"],
+                        },
+                    }
+                    for i in sorted(tool_call_accum.keys())
+                ]
+
+                # Persist assistant message with tool_calls (and any thinking content)
+                assistant_msg.content = "".join(content_buf)
+                assistant_msg.tool_calls = tool_calls_list
+                conv.updated_at = datetime.now(timezone.utc)
+                await db.commit()
+
+                # Register futures for ALL tool calls BEFORE sending any events
+                # so that the client can return results in any order.
+                futures: dict[str, asyncio.Future] = {
+                    tc["id"]: hub.create_tool_result_future(
+                        conversation_id, tc["id"]
+                    )
+                    for tc in tool_calls_list
+                }
+
+                # Notify the client of each tool call
+                for tc in tool_calls_list:
+                    await _send({
+                        "type": "tool_call",
+                        "conversation_id": conversation_id,
+                        "message_id": assistant_msg.id,
+                        "call_id": tc["id"],
+                        "name": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"],
+                    })
+
+                # Await results and persist tool-result messages
+                for tc in tool_calls_list:
+                    try:
+                        tool_result = await asyncio.wait_for(
+                            futures[tc["id"]], timeout=120.0
+                        )
+                        result_content: str = tool_result.get("content", "")
+                    except asyncio.TimeoutError:
+                        result_content = "Tool execution timed out"
+                    except asyncio.CancelledError:
+                        hub.cancel_tool_futures(conversation_id)
+                        raise
+
+                    db.add(Message(
+                        id=str(uuid.uuid4()),
+                        conversation_id=conversation_id,
+                        role="tool",
+                        tool_call_id=tc["id"],
+                        content=result_content,
+                        created_at=datetime.now(timezone.utc),
+                    ))
+                await db.commit()
+
+                # Create new assistant placeholder for the next iteration
+                assistant_msg = Message(
+                    id=str(uuid.uuid4()),
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content="",
+                    created_at=datetime.now(timezone.utc),
+                )
+                db.add(assistant_msg)
+                await db.commit()
+
+                # Tell the client to expect a new streaming message
+                await _send({
+                    "type": "generation_start",
+                    "conversation_id": conversation_id,
+                    "message_id": assistant_msg.id,
+                })
+                continue  # next iteration of the tool-call loop
+
+            # ── No tool calls — final response ────────────────────────────────
+            final_content = "".join(content_buf)
+            assistant_msg.content = final_content
+            conv.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+
             await _send({
-                "type": "token",
+                "type": "message_complete",
                 "conversation_id": conversation_id,
-                "message_id": assistant_msg.id,
-                "content": tok,
+                "message": {
+                    "id": assistant_msg.id,
+                    "role": "assistant",
+                    "content": final_content,
+                    "images": [],
+                    "created_at": assistant_msg.created_at.isoformat(),
+                },
             })
+            return  # done
 
-        # ── Persist final message ─────────────────────────────────────────────
+        # ── Max iterations reached ────────────────────────────────────────────
         final_content = "".join(content_buf)
-        assistant_msg.content = final_content
-        conv.updated_at = datetime.now(timezone.utc)
-        await db.commit()
-
+        if assistant_msg is not None:
+            assistant_msg.content = final_content
+            conv.updated_at = datetime.now(timezone.utc)
+            await db.commit()
         await _send({
             "type": "message_complete",
             "conversation_id": conversation_id,
             "message": {
-                "id": assistant_msg.id,
+                "id": assistant_msg.id if assistant_msg else "",
                 "role": "assistant",
                 "content": final_content,
                 "images": [],
-                "created_at": assistant_msg.created_at.isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             },
         })
 
     except asyncio.CancelledError:
+        hub.cancel_tool_futures(conversation_id)
         # Save whatever was streamed so far
         if assistant_msg is not None and content_buf:
             partial = "".join(content_buf)
@@ -281,8 +435,7 @@ async def run_generation(
                 partial += "</think>"
             try:
                 assistant_msg.content = partial
-                conv = await db.get(Conversation, conversation_id)
-                if conv:
+                if conv is not None:
                     conv.updated_at = datetime.now(timezone.utc)
                 await db.commit()
             except Exception:
@@ -290,6 +443,7 @@ async def run_generation(
         raise
 
     except Exception as e:
+        hub.cancel_tool_futures(conversation_id)
         await _send({
             "type": "error",
             "conversation_id": conversation_id,

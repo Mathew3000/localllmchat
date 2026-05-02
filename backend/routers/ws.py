@@ -3,13 +3,18 @@ WebSocket endpoint: /ws?token=<JWT>
 
 Client → Server messages:
   {"type": "ping"}
-  {"type": "send_message", "conversation_id": "...", "content": "...", "images": [...], "message_id": "..."}
+  {"type": "send_message", "conversation_id": "...", "content": "...", "images": [...],
+                           "message_id": "...", "tools": [...]}
+  {"type": "tool_result",  "conversation_id": "...", "call_id": "...", "content": "...",
+                           "is_error": false}
   {"type": "cancel", "conversation_id": "..."}
 
 Server → Client messages:
   {"type": "pong"}
   {"type": "generation_start",  "conversation_id": "...", "message_id": "..."}
   {"type": "token",             "conversation_id": "...", "message_id": "...", "content": "..."}
+  {"type": "tool_call",         "conversation_id": "...", "message_id": "...",
+                                "call_id": "...", "name": "...", "arguments": "..."}
   {"type": "message_complete",  "conversation_id": "...", "message": {...}}
   {"type": "cancelled",         "conversation_id": "..."}
   {"type": "error",             "conversation_id": "...", "detail": "..."}
@@ -83,6 +88,8 @@ async def websocket_endpoint(
                 content: str = msg.get("content", "")
                 images: list[str] = msg.get("images", [])
                 client_msg_id: str | None = msg.get("message_id")
+                # OpenAI-format tools array sent by the Flutter client.
+                tools: list[dict] = msg.get("tools", [])
 
                 if not conv_id:
                     await websocket.send_json(
@@ -122,16 +129,30 @@ async def websocket_endpoint(
                     cid: str = conv_id,
                     uid: str = user.id,
                     s: dict = settings_data,
+                    t: list[dict] = tools,
                 ) -> None:
                     task_db = AsyncSessionLocal()
                     try:
-                        await run_generation(task_db, uid, cid, s)
+                        await run_generation(task_db, uid, cid, s, tools=t)
                     finally:
                         await task_db.close()
                         hub.unregister_task(cid)
 
                 task = asyncio.create_task(_generate())
                 hub.register_task(conv_id, task)
+
+            # ── Tool result from client (MCP relay) ───────────────────────────
+            elif msg_type == "tool_result":
+                call_id: str | None = msg.get("call_id")
+                conv_id = msg.get("conversation_id")
+                tool_content: str = msg.get("content", "")
+                is_error: bool = bool(msg.get("is_error", False))
+                if call_id and conv_id:
+                    hub.resolve_tool_result(
+                        conv_id,
+                        call_id,
+                        {"content": tool_content, "is_error": is_error},
+                    )
 
             # ── Cancel in-flight generation ───────────────────────────────────
             elif msg_type == "cancel":

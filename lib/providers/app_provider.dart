@@ -204,7 +204,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Called when the app returns to the foreground.
   /// Reconnects the backend WebSocket if it dropped (e.g. screen locked while
   /// idle — the foreground service only runs during active generation so idle
-  /// connections are not protected).
+  /// connections are not protected). Also refreshes the conversation list so
+  /// chats created on other devices appear without requiring a full restart.
   void _onAppResumed() {
     if (!_settings.useBackend || _settings.backendToken.isEmpty) return;
     if (_backend == null) {
@@ -212,19 +213,50 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       _connectBackend();
       return;
     }
-    if (backendConnected) return; // still alive, nothing to do
+    if (backendConnected) {
+      // Still connected — refresh list to pick up chats from other devices.
+      _refreshConversations();
+      return;
+    }
 
     // WebSocket dropped — reconnect lightly without re-fetching everything.
     _backend!.connect().then((_) {
       notifyListeners();
-      // Reload active conversation: generation may have completed while offline.
-      if (_activeConversation != null) {
-        _loadConversationMessages(_activeConversation!.id);
-      }
+      _refreshConversations();
     }).catchError((_) {
       // Reconnect failed — show disconnected state; user can retry from settings.
       notifyListeners();
     });
+  }
+
+  /// Fetches a fresh conversation list from the backend while preserving any
+  /// already-loaded messages in the in-memory list.
+  Future<void> _refreshConversations() async {
+    if (_backend == null) return;
+    try {
+      final fresh = await _backend!.fetchConversations();
+      // Keep messages that were already loaded locally.
+      final localMsgs = {
+        for (final c in _conversations)
+          if (c.messages.isNotEmpty) c.id: c.messages
+      };
+      for (final c in fresh) {
+        final loaded = localMsgs[c.id];
+        if (loaded != null) c.messages.addAll(loaded);
+      }
+      _conversations = fresh;
+      // Re-point active conversation to the updated instance.
+      if (_activeConversation != null) {
+        final updated = fresh.firstWhere(
+          (c) => c.id == _activeConversation!.id,
+          orElse: () => fresh.isNotEmpty ? fresh.first : _activeConversation!,
+        );
+        _activeConversation = updated;
+      }
+      notifyListeners();
+    } catch (_) {
+      // Non-fatal — keep what we have.
+    }
   }
 
   Future<void> _init() async {
@@ -483,25 +515,43 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     await Future.wait(enabled.map(fetchMcpToolsForServer));
   }
 
-  /// Persists an updated server list without re-fetching tools.
+  /// Persists an updated server list, evicts stale caches, and triggers
+  /// fetches for any server that was just enabled or had its URL changed.
   /// Called by McpServersScreen whenever the user edits server config.
   Future<void> saveMcpServers(List<McpServer> servers) async {
     final oldById = {for (final s in _settings.mcpServers) s.id: s};
     _settings = _settings.copyWith(mcpServers: servers);
     await _storage.saveSettings(_settings);
 
-    // If a server's URL or transport changed, its cached service is stale —
-    // dispose and evict it (and the tool list) so the next fetch starts fresh.
+    final toFetch = <McpServer>[];
+
     for (final s in servers) {
       final old = oldById[s.id];
-      if (old != null &&
+      final urlOrTransportChanged = old != null &&
           (old.baseUrlHome != s.baseUrlHome ||
               old.baseUrlAway != s.baseUrlAway ||
-              old.transport != s.transport)) {
+              old.transport != s.transport);
+
+      if (urlOrTransportChanged) {
+        // Evict stale service and force re-ping with new URL.
         _mcpServiceCache.remove(s.id)?.dispose();
         _mcpToolsByServer.remove(s.id);
         _mcpErrorByServer.remove(s.id);
-        _serverLastUrlCheck.remove(s.id); // force re-ping with new URL
+        _serverLastUrlCheck.remove(s.id);
+      }
+
+      final wasEnabled = old?.enabled ?? false;
+      final justEnabled = !wasEnabled && s.enabled;
+      final justDisabled = wasEnabled && !s.enabled;
+
+      if (justDisabled) {
+        // Clear tools for a server that was just turned off.
+        _mcpServiceCache.remove(s.id)?.dispose();
+        _mcpToolsByServer.remove(s.id);
+        _mcpErrorByServer.remove(s.id);
+      } else if (s.enabled && (justEnabled || urlOrTransportChanged)) {
+        // Re-fetch tools for a newly-enabled server or one whose URL changed.
+        toFetch.add(s);
       }
     }
 
@@ -517,6 +567,11 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     _serverLastUrlCheck.removeWhere((k, _) => !ids.contains(k));
     _rebuildToolServiceMap();
     notifyListeners();
+
+    // Kick off fetches outside the synchronous path.
+    for (final s in toFetch) {
+      fetchMcpToolsForServer(s);
+    }
   }
 
   // ── Secret chats ──────────────────────────────────────────────────────────
@@ -735,6 +790,14 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       final convs = await _backend!.fetchConversations();
       _conversations = convs;
       _activeConversation = convs.isNotEmpty ? convs.first : null;
+      // Pre-load messages for the initially active conversation so the user
+      // sees content immediately without having to tap it first.
+      if (_activeConversation != null) {
+        _loadConversationMessages(_activeConversation!.id);
+      }
+      // Re-fetch MCP tools now that settings may have been updated from the
+      // server — the initial _fetchAllMcpTools() runs before backend connects.
+      _fetchAllMcpTools();
     } catch (e) {
       _backendConnectError = e.toString();
       _backend?.dispose();
@@ -1051,6 +1114,11 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         userMsg.content,
         userMsg.images,
         messageId: userMsg.id,
+        // Forward tool definitions so the backend can include them in the LLM
+        // request and relay tool_call events back to this client for execution.
+        tools: mcpAvailable
+            ? mcpTools.map((t) => t.toOpenAiTool()).toList()
+            : const [],
       );
     } catch (e) {
       assistantMsg.isStreaming = false;
@@ -1081,10 +1149,16 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (cid == _streamingBackendConvId) {
           _streamingBackendMsg?.isStreaming = false;
           _streamingBackendMsg = null;
+          final completedConvId = _streamingBackendConvId;
           _streamingBackendConvId = null;
           _isStreaming = false;
           StreamingKeepAlive.stop();
           notifyListeners();
+          // Reload from backend to get canonical message state (tool messages,
+          // correct IDs, etc.) after a completed generation.
+          if (completedConvId != null && _backend != null) {
+            _loadConversationMessages(completedConvId);
+          }
           _processNextInQueue();
         }
 
@@ -1115,9 +1189,94 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           notifyListeners();
         }
 
-      case BEGenerationStart():
-        break; // placeholder already created locally
+      case BEGenerationStart(conversationId: final cid):
+        // Initial generation_start: the placeholder was already created in
+        // _runBackendGeneration(), so nothing to do.
+        // Subsequent generation_start (after tool calls): the previous
+        // _streamingBackendMsg was finalized by BEToolCall; create a new
+        // placeholder for the continuation response.
+        if (cid == _streamingBackendConvId && _streamingBackendMsg == null) {
+          final newMsg = Message(
+            role: Role.assistant,
+            content: '',
+            isStreaming: true,
+          );
+          _activeConversation?.messages.add(newMsg);
+          _streamingBackendMsg = newMsg;
+          notifyListeners();
+        }
+
+      case BEToolCall(
+            conversationId: final cid,
+            callId: final callId,
+            name: final toolName,
+            arguments: final argsJson,
+          ):
+        if (cid == _streamingBackendConvId) {
+          // Finalize the current streaming message (may contain thinking content).
+          _streamingBackendMsg?.isStreaming = false;
+          _streamingBackendMsg = null;
+
+          // Show a tool-execution placeholder in the conversation.
+          final toolMsg = Message(
+            role: Role.tool,
+            content: '',
+            toolCallId: callId,
+            toolName: toolName,
+            isStreaming: true,
+          );
+          _activeConversation?.messages.add(toolMsg);
+          notifyListeners();
+
+          // Execute asynchronously and relay result back to backend.
+          _executeRelayedToolCall(cid, callId, toolName, argsJson, toolMsg);
+        }
     }
+  }
+
+  /// Executes an MCP tool requested by the backend and sends the result back.
+  void _executeRelayedToolCall(
+    String convId,
+    String callId,
+    String toolName,
+    String argsJson,
+    Message toolMsg,
+  ) {
+    // Run async without awaiting so the event loop can process more events.
+    () async {
+      String content;
+      bool isError = false;
+      try {
+        Map<String, dynamic> args;
+        try {
+          args = jsonDecode(argsJson) as Map<String, dynamic>;
+        } catch (_) {
+          args = {};
+        }
+        final service = _toolServiceMap[toolName];
+        if (service == null) {
+          content = 'Tool error: unknown tool "$toolName"';
+          isError = true;
+        } else {
+          final mcpContent = await service.callTool(toolName, args);
+          toolMsg.toolContent = mcpContent;
+          content = mcpContent.map((c) => c.toApiText()).join('\n');
+        }
+      } catch (e) {
+        content = 'Tool error: $e';
+        isError = true;
+      }
+
+      toolMsg.content = content;
+      toolMsg.isStreaming = false;
+      notifyListeners();
+
+      // Send the result back to the backend to unblock its await.
+      try {
+        await _backend?.sendToolResult(convId, callId, content,
+            isError: isError);
+      } catch (_) {}
+    }();
   }
 
   // ── Streaming (no tools) ──────────────────────────────────────────────────
