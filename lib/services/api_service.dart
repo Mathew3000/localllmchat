@@ -53,7 +53,7 @@ class ApiService {
             }
             return true;
           })
-          .map((m) => m.toJson()),
+          .map((m) => m.toJson(preserveThinking: settings.preserveThinking)),
     );
     return messages;
   }

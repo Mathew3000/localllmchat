@@ -91,6 +91,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         autoSyncEnabled: s.autoSyncEnabled,
         autoSyncIntervalMinutes: s.autoSyncIntervalMinutes,
         injectDateTime: s.injectDateTime,
+        preserveThinking: s.preserveThinking,
         debugLogging: s.debugLogging,
         debugLogPath: s.debugLogPath,
         useBackend: s.useBackend,
@@ -337,6 +338,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   value: provider.settings.injectDateTime,
                   onChanged: (v) => provider.updateSettings(
                     provider.settings.copyWith(injectDateTime: v),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              Consumer<AppProvider>(
+                builder: (_, provider, __) => SwitchListTile(
+                  secondary: const Icon(Icons.psychology_outlined),
+                  title: const Text('Preserve thinking history'),
+                  subtitle: Text(
+                    'Passes reasoning tokens back to the model in subsequent turns (Qwen3, DeepSeek-R1)',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                        ),
+                  ),
+                  value: provider.settings.preserveThinking,
+                  onChanged: (v) => provider.updateSettings(
+                    provider.settings.copyWith(preserveThinking: v),
                   ),
                 ),
               ),

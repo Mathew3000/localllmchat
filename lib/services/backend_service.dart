@@ -8,6 +8,7 @@ import 'package:web_socket_channel/io.dart';
 
 import '../models/conversation.dart';
 import '../models/message.dart';
+import '../models/tool_call.dart';
 
 // ── WebSocket event hierarchy ─────────────────────────────────────────────────
 
@@ -540,6 +541,40 @@ class BackendService {
             .toList()
         : <Message>[];
 
+    // Second pass: derive toolName for tool-result messages by looking up the
+    // call id in preceding assistant tool-call messages.  toolName is not
+    // persisted on the backend — it's a display-only field computed here.
+    if (withMessages && messages.isNotEmpty) {
+      final callNames = <String, String>{};
+      for (final msg in messages) {
+        if (msg.hasToolCalls) {
+          for (final tc in msg.toolCalls!) {
+            if (tc.id.isNotEmpty && tc.name.isNotEmpty) {
+              callNames[tc.id] = tc.name;
+            }
+          }
+        }
+      }
+      for (int i = 0; i < messages.length; i++) {
+        final msg = messages[i];
+        if (msg.isToolResult &&
+            msg.toolCallId != null &&
+            msg.toolName == null) {
+          final name = callNames[msg.toolCallId!];
+          if (name != null) {
+            messages[i] = Message(
+              id: msg.id,
+              role: msg.role,
+              content: msg.content,
+              toolCallId: msg.toolCallId,
+              toolName: name,
+              images: msg.images,
+            );
+          }
+        }
+      }
+    }
+
     return Conversation(
       id: j['id'] as String,
       title: j['title'] as String,
@@ -559,11 +594,18 @@ class BackendService {
       (r) => r.name == roleStr,
       orElse: () => Role.user,
     );
+    // tool_calls are stored in OpenAI wire format on the backend.
+    final rawCalls = j['tool_calls'] as List<dynamic>?;
+    final toolCalls = rawCalls
+        ?.map((t) => ToolCall.fromApiJson(t as Map<String, dynamic>))
+        .where((tc) => tc.id.isNotEmpty)
+        .toList();
     return Message(
       id: j['id'] as String,
       role: role,
       content: j['content'] as String? ?? '',
       toolCallId: j['tool_call_id'] as String?,
+      toolCalls: (toolCalls != null && toolCalls.isNotEmpty) ? toolCalls : null,
       images:
           (j['images'] as List<dynamic>?)?.map((e) => e as String).toList() ??
               const [],

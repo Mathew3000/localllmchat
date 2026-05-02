@@ -16,6 +16,7 @@ result so the device receives the completed message on next load.
 
 import asyncio
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -35,6 +36,26 @@ def _dt_string() -> str:
     return f"{now.strftime('%A')}, {now.day} {now.strftime('%B %Y, %H:%M')}"
 
 
+def _strip_thinking(text: str) -> str:
+    """Remove <think>…</think> blocks (including unclosed ones) from text."""
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text)
+    text = re.sub(r"<think>[\s\S]*", "", text)  # unclosed block
+    return text.strip()
+
+
+def _extract_thinking(text: str) -> tuple[str | None, str]:
+    """Return (thinking_content, content_without_thinking).
+
+    thinking_content is None when no <think> block is present.
+    """
+    m = re.search(r"<think>([\s\S]*?)</think>", text)
+    if not m:
+        return None, _strip_thinking(text)
+    thinking = m.group(1).strip()
+    main = _strip_thinking(text)
+    return (thinking or None), main
+
+
 def _build_messages(
     history: list[Message],
     settings: dict,
@@ -43,6 +64,7 @@ def _build_messages(
 ) -> list[dict]:
     """Convert ORM message list to OpenAI chat/completions payload."""
     messages: list[dict] = []
+    preserve_thinking: bool = bool(settings.get("preserveThinking", False))
 
     system_prompt: str = settings.get("systemPrompt", "")
     if settings.get("injectDateTime"):
@@ -73,7 +95,8 @@ def _build_messages(
         m: dict = {"role": msg.role}
 
         if msg.tool_calls:
-            # Assistant message that triggered tool calls
+            # Assistant message that triggered tool calls — thinking content
+            # (if any) is kept as-is; tool_calls is the semantic payload.
             m["content"] = msg.content or None
             m["tool_calls"] = msg.tool_calls
         elif msg.tool_call_id:
@@ -90,6 +113,20 @@ def _build_messages(
             if msg.content:
                 content.append({"type": "text", "text": msg.content})
             m["content"] = content
+        elif msg.role == "assistant":
+            # Strip or preserve thinking tokens based on the setting.
+            raw = msg.content or ""
+            if preserve_thinking:
+                thinking, main = _extract_thinking(raw)
+                m["content"] = main or None
+                if thinking:
+                    m["reasoning_content"] = thinking
+            else:
+                stripped = _strip_thinking(raw)
+                m["content"] = stripped or None
+            # Drop assistant messages that are empty after processing.
+            if not m.get("content") and not m.get("reasoning_content"):
+                continue
         else:
             m["content"] = msg.content
 

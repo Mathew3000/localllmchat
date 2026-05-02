@@ -41,7 +41,8 @@ class Message {
   /// Content with `<think>…</think>` blocks stripped.
   ///
   /// Thinking tokens are generated locally for display only; they must not
-  /// be echoed back to the LLM as part of the conversation history.
+  /// be echoed back to the LLM as part of the conversation history unless
+  /// [preserveThinking] is explicitly requested.
   String get contentForApi {
     return content
         .replaceAll(RegExp(r'<think>[\s\S]*?</think>'), '')
@@ -49,9 +50,23 @@ class Message {
         .trim();
   }
 
+  /// The reasoning content inside the first `<think>…</think>` block, or
+  /// null when the message contains no thinking tokens.
+  String? get thinkingContent {
+    final m = RegExp(r'<think>([\s\S]*?)</think>').firstMatch(content);
+    final text = m?.group(1)?.trim();
+    return (text != null && text.isNotEmpty) ? text : null;
+  }
+
   // ── API serialisation ──────────────────────────────────────────────────────
 
-  Map<String, dynamic> toJson() {
+  /// Serialises this message for the OpenAI chat/completions API.
+  ///
+  /// When [preserveThinking] is true, any `<think>…</think>` content from a
+  /// previous assistant turn is surfaced as a `reasoning_content` field
+  /// (recognised by vLLM / SGLang) rather than stripped entirely.  Servers
+  /// that don't understand the extra field simply ignore it.
+  Map<String, dynamic> toJson({bool preserveThinking = false}) {
     if (role == Role.tool) {
       return {
         'role': 'tool',
@@ -81,7 +96,20 @@ class Message {
       return {'role': 'user', 'content': parts};
     }
 
-    // Strip thinking blocks — the model must not see its own reasoning history.
+    // For assistant messages: optionally preserve thinking as reasoning_content.
+    if (role == Role.assistant && preserveThinking) {
+      final thinking = thinkingContent;
+      if (thinking != null) {
+        final apiContent = contentForApi;
+        return {
+          'role': 'assistant',
+          'content': apiContent.isEmpty ? null : apiContent,
+          'reasoning_content': thinking,
+        };
+      }
+    }
+
+    // Default: strip thinking blocks so the model doesn't see its own reasoning.
     return {'role': role.name, 'content': contentForApi};
   }
 
