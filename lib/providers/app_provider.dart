@@ -308,11 +308,16 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       _conversations = fresh;
       // Re-point active conversation to the updated instance.
       if (_activeConversation != null) {
-        final updated = fresh.firstWhere(
-          (c) => c.id == _activeConversation!.id,
-          orElse: () => fresh.isNotEmpty ? fresh.first : _activeConversation!,
-        );
-        _activeConversation = updated;
+        // Try to keep the same conversation; fall back to first visible one
+        // (never expose a secret chat while secrets are locked).
+        final stillExists =
+            fresh.where((c) => c.id == _activeConversation!.id).toList();
+        if (stillExists.isNotEmpty) {
+          _activeConversation = stillExists.first;
+        } else {
+          final visible = fresh.where((c) => !c.isSecret).toList();
+          _activeConversation = visible.isNotEmpty ? visible.first : null;
+        }
       }
       notifyListeners();
     } catch (_) {
@@ -329,9 +334,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
     _conversations = await _storage.loadConversations();
     if (_conversations.isNotEmpty) {
-      _activeConversation = _conversations.firstWhere(
-          (c) => !c.isSecret,
-          orElse: () => _conversations.first);
+      final visible = _conversations.where((c) => !c.isSecret).toList();
+      _activeConversation = visible.isNotEmpty ? visible.first : null;
     }
     notifyListeners();
     _autoDetectUrl();
@@ -856,7 +860,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Load conversations from the backend
       final convs = await _backend!.fetchConversations();
       _conversations = convs;
-      _activeConversation = convs.isNotEmpty ? convs.first : null;
+      final visibleConvs = convs.where((c) => !c.isSecret).toList();
+      _activeConversation = visibleConvs.isNotEmpty ? visibleConvs.first : null;
       // Pre-load messages for the initially active conversation so the user
       // sees content immediately without having to tap it first.
       if (_activeConversation != null) {
@@ -939,10 +944,10 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _storage.saveSettings(_settings);
     // Reload local conversations
     _conversations = await _storage.loadConversations();
-    _activeConversation = _conversations.isNotEmpty
-        ? _conversations.firstWhere((c) => !c.isSecret,
-            orElse: () => _conversations.first)
-        : null;
+    final logoutVisible =
+        _conversations.where((c) => !c.isSecret).toList();
+    _activeConversation =
+        logoutVisible.isNotEmpty ? logoutVisible.first : null;
     notifyListeners();
   }
 
