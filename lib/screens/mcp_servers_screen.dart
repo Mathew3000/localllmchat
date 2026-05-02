@@ -369,6 +369,53 @@ class _McpServerCardState extends State<_McpServerCard> {
           ),
           const Divider(height: 1),
 
+          // ── Memory server toggle ──────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.psychology_outlined,
+                  size: 16,
+                  color: widget.server.isMemory
+                      ? cs.primary
+                      : cs.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Memory server',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: widget.server.isMemory
+                              ? cs.primary
+                              : cs.onSurface,
+                          fontWeight: widget.server.isMemory
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                        ),
+                      ),
+                      Text(
+                        'Fetches user context before each message and injects it into the system prompt.',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch.adaptive(
+                  value: widget.server.isMemory,
+                  onChanged: (v) =>
+                      widget.onChanged(widget.server.copyWith(isMemory: v)),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+
           // ── Status row ────────────────────────────────────────────────────
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),

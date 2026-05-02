@@ -90,6 +90,8 @@ async def websocket_endpoint(
                 client_msg_id: str | None = msg.get("message_id")
                 # OpenAI-format tools array sent by the Flutter client.
                 tools: list[dict] = msg.get("tools", [])
+                # Optional user-memory context pre-fetched by the client.
+                memory_context: str | None = msg.get("memory_context") or None
 
                 if not conv_id:
                     await websocket.send_json(
@@ -130,10 +132,13 @@ async def websocket_endpoint(
                     uid: str = user.id,
                     s: dict = settings_data,
                     t: list[dict] = tools,
+                    mc: str | None = memory_context,
                 ) -> None:
                     task_db = AsyncSessionLocal()
                     try:
-                        await run_generation(task_db, uid, cid, s, tools=t)
+                        await run_generation(
+                            task_db, uid, cid, s, tools=t, memory_context=mc
+                        )
                     finally:
                         await task_db.close()
                         hub.unregister_task(cid)

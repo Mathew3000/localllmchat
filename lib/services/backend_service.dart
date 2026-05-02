@@ -293,6 +293,7 @@ class BackendService {
     List<String> images, {
     String? messageId,
     List<Map<String, dynamic>> tools = const [],
+    String? memoryContext,
   }) async {
     await ensureConnected();
     _send({
@@ -302,6 +303,8 @@ class BackendService {
       'images': images,
       if (messageId != null) 'message_id': messageId,
       if (tools.isNotEmpty) 'tools': tools,
+      if (memoryContext != null && memoryContext.isNotEmpty)
+        'memory_context': memoryContext,
     });
   }
 

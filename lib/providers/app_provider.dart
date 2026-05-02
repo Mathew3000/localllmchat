@@ -98,6 +98,11 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Runtime override — lets the user toggle tools on/off without touching settings.
   bool _mcpActive = true;
 
+  // ── Memory pre-fetch cache ────────────────────────────────────────────────
+  String? _cachedMemoryContext;
+  DateTime? _memoryCacheTime;
+  static const _memoryCacheDuration = Duration(minutes: 5);
+
   // ── Getters ───────────────────────────────────────────────────────────────
 
   AppSettings get settings => _settings;
@@ -171,6 +176,62 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   void toggleMcp() {
     _mcpActive = !_mcpActive;
     notifyListeners();
+  }
+
+  // ── Memory helpers ────────────────────────────────────────────────────────
+
+  /// Returns the first enabled memory server, or null.
+  McpServer? _findMemoryServer() {
+    for (final s in _settings.mcpServers) {
+      if (s.isMemory && s.enabled) return s;
+    }
+    return null;
+  }
+
+  /// Pre-fetches the user entity from the memory MCP server (if configured
+  /// and the MCP toggle is on).  Results are cached for [_memoryCacheDuration]
+  /// to avoid a round-trip on every single message.
+  Future<String?> _fetchUserMemory() async {
+    if (!_mcpActive) return null;
+    final server = _findMemoryServer();
+    if (server == null) return null;
+    final service = _mcpServiceCache[server.id];
+    if (service == null) return null;
+
+    // Return from cache if still fresh.
+    if (_cachedMemoryContext != null &&
+        _memoryCacheTime != null &&
+        DateTime.now().difference(_memoryCacheTime!) < _memoryCacheDuration) {
+      return _cachedMemoryContext;
+    }
+
+    try {
+      final content = await service
+          .callTool('search_nodes', {'query': 'user'})
+          .timeout(const Duration(seconds: 5));
+      if (content.isEmpty) return null;
+      final text = content.map((c) => c.toApiText()).join('\n').trim();
+      if (text.isEmpty) return null;
+      _cachedMemoryContext = text;
+      _memoryCacheTime = DateTime.now();
+      return text;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Returns a copy of [_settings] with [memoryCtx] appended to the system
+  /// prompt.  Used in direct-mode generation so both streaming and agentic
+  /// paths receive the user context without any further plumbing.
+  AppSettings _settingsWithMemory(String? memoryCtx) {
+    if (memoryCtx == null || memoryCtx.isEmpty) return _settings;
+    const separator = '\n\n---\n**About the user (from memory):**\n';
+    const footer =
+        '\n\nUse the memory tools to look up more details or save new '
+        'information you learn about the user during this conversation.';
+    return _settings.copyWith(
+      systemPrompt: _settings.systemPrompt + separator + memoryCtx + footer,
+    );
   }
 
   String get activeBaseUrl =>
@@ -543,6 +604,12 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       final wasEnabled = old?.enabled ?? false;
       final justEnabled = !wasEnabled && s.enabled;
       final justDisabled = wasEnabled && !s.enabled;
+
+      // Invalidate memory cache if anything about the memory server changed.
+      if (s.isMemory || (old?.isMemory ?? false)) {
+        _cachedMemoryContext = null;
+        _memoryCacheTime = null;
+      }
 
       if (justDisabled) {
         // Clear tools for a server that was just turned off.
@@ -1078,21 +1145,25 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     await StreamingKeepAlive.start();
 
+    // Pre-fetch user memory context (non-blocking — failures are silently
+    // swallowed and we proceed without memory rather than blocking the user).
+    final memoryCtx = await _fetchUserMemory();
+
     if (_settings.useBackend && _backend != null) {
-      await _runBackendGeneration();
+      await _runBackendGeneration(memoryCtx: memoryCtx);
     } else {
       await _autoDetectUrl();
       if (mcpAvailable) {
-        await _runAgenticLoop();
+        await _runAgenticLoop(memoryCtx: memoryCtx);
       } else {
-        await _runStreamingChat();
+        await _runStreamingChat(memoryCtx: memoryCtx);
       }
     }
   }
 
   // ── Backend generation ────────────────────────────────────────────────────
 
-  Future<void> _runBackendGeneration() async {
+  Future<void> _runBackendGeneration({String? memoryCtx}) async {
     final conv = _activeConversation!;
     final userMsg = conv.messages.last; // just added in sendMessage()
 
@@ -1119,6 +1190,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         tools: mcpAvailable
             ? mcpTools.map((t) => t.toOpenAiTool()).toList()
             : const [],
+        memoryContext: memoryCtx,
       );
     } catch (e) {
       assistantMsg.isStreaming = false;
@@ -1281,7 +1353,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── Streaming (no tools) ──────────────────────────────────────────────────
 
-  Future<void> _runStreamingChat() async {
+  Future<void> _runStreamingChat({String? memoryCtx}) async {
     final assistantMsg = Message(
       role: Role.assistant,
       content: '',
@@ -1292,7 +1364,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
 
     try {
-      final api = ApiService(_settings, activeBaseUrl);
+      final api = ApiService(_settingsWithMemory(memoryCtx), activeBaseUrl);
       final history = _activeConversation!.messages
           .where((m) => m.id != assistantMsg.id)
           .toList();
@@ -1337,8 +1409,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── Agentic loop (with MCP tools, fully streaming) ───────────────────────
 
-  Future<void> _runAgenticLoop() async {
-    final api = ApiService(_settings, activeBaseUrl);
+  Future<void> _runAgenticLoop({String? memoryCtx}) async {
+    final api = ApiService(_settingsWithMemory(memoryCtx), activeBaseUrl);
     const maxIterations = 10;
 
     Message? activeMsg;
