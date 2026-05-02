@@ -61,6 +61,31 @@ class ToolCall {
         arguments:
             (json['arguments'] as Map<String, dynamic>?) ?? {},
       );
+
+  /// Parses a tool call in OpenAI wire format (as returned by the backend API
+  /// and stored in the DB):
+  /// `{"id": "call_x", "type": "function", "function": {"name": "…", "arguments": "…"}}`
+  factory ToolCall.fromApiJson(Map<String, dynamic> json) {
+    final fn = json['function'] as Map<String, dynamic>? ?? {};
+    final argsRaw = fn['arguments'];
+    Map<String, dynamic> args;
+    if (argsRaw is String) {
+      try {
+        args = jsonDecode(argsRaw) as Map<String, dynamic>;
+      } catch (_) {
+        args = {};
+      }
+    } else if (argsRaw is Map<String, dynamic>) {
+      args = argsRaw;
+    } else {
+      args = {};
+    }
+    return ToolCall(
+      id: json['id'] as String? ?? '',
+      name: fn['name'] as String? ?? '',
+      arguments: args,
+    );
+  }
 }
 
 /// A single content item in a tool result (text or image).

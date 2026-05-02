@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../models/mcp_server.dart';
 import '../models/tool_call.dart';
@@ -81,6 +82,7 @@ class _McpServersScreenState extends State<McpServersScreen> {
                     fetching: provider.fetchingForServer(server.id),
                     error: provider.errorForServer(server.id),
                     usingAway: provider.serverUsingAway(server.id),
+                    inBackendMode: provider.settings.useBackend,
                     detectedTransport:
                         provider.detectedTransportForServer(server.id),
                     onChanged: _updateServer,
@@ -167,6 +169,7 @@ class _McpServerCard extends StatefulWidget {
   final bool fetching;
   final String? error;
   final bool usingAway;
+  final bool inBackendMode;
   /// When transport is [McpTransport.auto], shows which protocol was detected.
   final String? detectedTransport;
   final ValueChanged<McpServer> onChanged;
@@ -180,6 +183,7 @@ class _McpServerCard extends StatefulWidget {
     required this.fetching,
     required this.error,
     required this.usingAway,
+    required this.inBackendMode,
     this.detectedTransport,
     required this.onChanged,
     required this.onDelete,
@@ -274,23 +278,27 @@ class _McpServerCardState extends State<_McpServerCard> {
             hint: 'http://192.168.1.x:4242',
             helper: 'Home / local network',
             onCommit: _commit,
-            trailing: widget.server.baseUrlAway.isNotEmpty && !widget.usingAway
+            trailing: !widget.inBackendMode &&
+                    widget.server.baseUrlAway.isNotEmpty &&
+                    !widget.usingAway
                 ? _ActiveBadge(label: 'active', cs: cs)
                 : null,
           ),
-          const Divider(height: 1),
+          if (!widget.inBackendMode) ...[
+            const Divider(height: 1),
 
-          // ── Away URL ─────────────────────────────────────────────────────
-          _UrlField(
-            label: 'Away URL',
-            controller: _awayCtrl,
-            hint: 'http://100.x.x.x:4242',
-            helper: 'VPN / remote — optional',
-            onCommit: _commit,
-            trailing: widget.usingAway
-                ? _ActiveBadge(label: 'active', cs: cs)
-                : null,
-          ),
+            // ── Away URL ───────────────────────────────────────────────────
+            _UrlField(
+              label: 'Away URL',
+              controller: _awayCtrl,
+              hint: 'http://100.x.x.x:4242',
+              helper: 'VPN / remote — optional',
+              onCommit: _commit,
+              trailing: widget.usingAway
+                  ? _ActiveBadge(label: 'active', cs: cs)
+                  : null,
+            ),
+          ],
           const Divider(height: 1),
 
           // ── Transport selector ────────────────────────────────────────────
@@ -346,6 +354,62 @@ class _McpServerCardState extends State<_McpServerCard> {
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                   ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+
+          // ── Auth headers ──────────────────────────────────────────────────
+          _HeadersSection(
+            headers: widget.server.headers,
+            onChanged: (newHeaders) => widget.onChanged(
+              widget.server.copyWith(headers: newHeaders),
+            ),
+          ),
+          const Divider(height: 1),
+
+          // ── Memory server toggle ──────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.psychology_outlined,
+                  size: 16,
+                  color: widget.server.isMemory
+                      ? cs.primary
+                      : cs.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Memory server',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: widget.server.isMemory
+                              ? cs.primary
+                              : cs.onSurface,
+                          fontWeight: widget.server.isMemory
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                        ),
+                      ),
+                      Text(
+                        'Fetches user context before each message and injects it into the system prompt.',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch.adaptive(
+                  value: widget.server.isMemory,
+                  onChanged: (v) =>
+                      widget.onChanged(widget.server.copyWith(isMemory: v)),
                 ),
               ],
             ),
@@ -439,6 +503,309 @@ class _McpServerCardState extends State<_McpServerCard> {
         serverName: widget.server.name,
         tools: widget.tools,
       ),
+    );
+  }
+}
+
+// ── Auth headers section ──────────────────────────────────────────────────────
+
+/// Returns true if [key] looks like it might hold a secret value so the
+/// value field is shown obscured by default.
+bool _looksSecret(String key) {
+  final l = key.toLowerCase();
+  return l.contains('key') ||
+      l.contains('token') ||
+      l.contains('secret') ||
+      l.contains('auth') ||
+      l.contains('pass') ||
+      l.contains('bearer') ||
+      l.contains('credential') ||
+      l.contains('api');
+}
+
+class _HeadersSection extends StatelessWidget {
+  final Map<String, String> headers;
+  final ValueChanged<Map<String, String>> onChanged;
+
+  const _HeadersSection({required this.headers, required this.onChanged});
+
+  Future<void> _addHeader(BuildContext context) async {
+    final result = await showDialog<MapEntry<String, String>>(
+      context: context,
+      builder: (_) => const _AddHeaderDialog(),
+    );
+    if (result == null) return;
+    onChanged({...headers, result.key: result.value});
+  }
+
+  void _deleteHeader(String key) {
+    final updated = Map<String, String>.of(headers)..remove(key);
+    onChanged(updated);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Section label + Add button
+          Row(
+            children: [
+              Text(
+                'Auth Headers',
+                style: theme.textTheme.labelSmall
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+              const Spacer(),
+              InkWell(
+                onTap: () => _addHeader(context),
+                borderRadius: BorderRadius.circular(4),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.add_rounded, size: 14, color: cs.primary),
+                      const SizedBox(width: 2),
+                      Text(
+                        'Add',
+                        style: theme.textTheme.labelSmall
+                            ?.copyWith(color: cs.primary),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          // Header rows
+          if (headers.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 2),
+              child: Text(
+                'No auth headers — tap Add to inject tokens or API keys.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant.withValues(alpha: 0.7)),
+              ),
+            )
+          else
+            ...headers.entries.map(
+              (e) => _HeaderRow(
+                headerKey: e.key,
+                value: e.value,
+                onDelete: () => _deleteHeader(e.key),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HeaderRow extends StatefulWidget {
+  final String headerKey;
+  final String value;
+  final VoidCallback onDelete;
+
+  const _HeaderRow({
+    required this.headerKey,
+    required this.value,
+    required this.onDelete,
+  });
+
+  @override
+  State<_HeaderRow> createState() => _HeaderRowState();
+}
+
+class _HeaderRowState extends State<_HeaderRow> {
+  late bool _obscure;
+
+  @override
+  void initState() {
+    super.initState();
+    _obscure = _looksSecret(widget.headerKey);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    final displayValue = _obscure
+        ? '•' * widget.value.length.clamp(4, 20)
+        : widget.value;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Key badge
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              widget.headerKey,
+              style: theme.textTheme.labelSmall?.copyWith(
+                fontFamily: 'monospace',
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          // Value
+          Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _obscure = !_obscure),
+              child: Text(
+                displayValue,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'monospace',
+                  color: _obscure ? cs.outline : cs.onSurface,
+                  letterSpacing: _obscure ? 2 : null,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+          // Reveal/hide toggle
+          IconButton(
+            icon: Icon(
+              _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+              size: 14,
+              color: cs.onSurfaceVariant,
+            ),
+            onPressed: () => setState(() => _obscure = !_obscure),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            tooltip: _obscure ? 'Show value' : 'Hide value',
+          ),
+          // Copy button
+          IconButton(
+            icon: Icon(Icons.copy_rounded, size: 14, color: cs.onSurfaceVariant),
+            onPressed: () => Clipboard.setData(ClipboardData(text: widget.value)),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            tooltip: 'Copy value',
+          ),
+          // Delete button
+          IconButton(
+            icon:
+                Icon(Icons.close_rounded, size: 14, color: cs.error.withValues(alpha: 0.7)),
+            onPressed: widget.onDelete,
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            tooltip: 'Remove header',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Add-header dialog ─────────────────────────────────────────────────────────
+
+class _AddHeaderDialog extends StatefulWidget {
+  const _AddHeaderDialog();
+
+  @override
+  State<_AddHeaderDialog> createState() => _AddHeaderDialogState();
+}
+
+class _AddHeaderDialogState extends State<_AddHeaderDialog> {
+  final _keyCtrl = TextEditingController();
+  final _valCtrl = TextEditingController();
+  final _keyFocus = FocusNode();
+  bool _obscureValue = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Rebuild on key changes: enables the Add button and auto-toggles obscure.
+    _keyCtrl.addListener(() {
+      setState(() {
+        _obscureValue = _looksSecret(_keyCtrl.text);
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _keyCtrl.dispose();
+    _valCtrl.dispose();
+    _keyFocus.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final k = _keyCtrl.text.trim();
+    final v = _valCtrl.text;
+    if (k.isEmpty) return;
+    Navigator.pop(context, MapEntry(k, v));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add auth header'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _keyCtrl,
+            focusNode: _keyFocus,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Header name',
+              hintText: 'Authorization',
+              helperText: 'e.g. Authorization, X-Api-Key',
+            ),
+            textInputAction: TextInputAction.next,
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _valCtrl,
+            obscureText: _obscureValue,
+            decoration: InputDecoration(
+              labelText: 'Value',
+              hintText: 'Bearer <token>',
+              suffixIcon: IconButton(
+                icon: Icon(_obscureValue
+                    ? Icons.visibility_outlined
+                    : Icons.visibility_off_outlined),
+                onPressed: () =>
+                    setState(() => _obscureValue = !_obscureValue),
+                tooltip: _obscureValue ? 'Show' : 'Hide',
+              ),
+            ),
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _submit(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _keyCtrl.text.trim().isEmpty ? null : _submit,
+          child: const Text('Add'),
+        ),
+      ],
     );
   }
 }

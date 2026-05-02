@@ -30,6 +30,21 @@ class McpServer {
   /// Which transport protocol to use (default: auto-detect).
   McpTransport transport;
 
+  /// Extra HTTP headers sent with every request to this server.
+  ///
+  /// Intended for authentication (e.g. `{"Authorization": "Bearer <token>"}`).
+  /// Stored in settings JSON and included in the encrypted sync blob —
+  /// the sync server never sees the plaintext values.
+  Map<String, String> headers;
+
+  /// When true, this server is used for per-user memory (mcp-memory protocol).
+  ///
+  /// Before each generation the app calls `search_nodes` with a "user" query
+  /// and injects the result as a brief context block into the system prompt.
+  /// The model can use this server's tools for deeper look-ups and to persist
+  /// new information it learns during the conversation.
+  bool isMemory;
+
   McpServer({
     String? id,
     this.name = 'New Server',
@@ -37,6 +52,8 @@ class McpServer {
     this.baseUrlAway = '',
     this.enabled = true,
     this.transport = McpTransport.auto,
+    this.headers = const {},
+    this.isMemory = false,
   }) : id = id ?? const Uuid().v4();
 
   McpServer copyWith({
@@ -45,6 +62,8 @@ class McpServer {
     String? baseUrlAway,
     bool? enabled,
     McpTransport? transport,
+    Map<String, String>? headers,
+    bool? isMemory,
   }) =>
       McpServer(
         id: id,
@@ -53,6 +72,8 @@ class McpServer {
         baseUrlAway: baseUrlAway ?? this.baseUrlAway,
         enabled: enabled ?? this.enabled,
         transport: transport ?? this.transport,
+        headers: headers ?? Map.of(this.headers),
+        isMemory: isMemory ?? this.isMemory,
       );
 
   Map<String, dynamic> toJson() => {
@@ -62,6 +83,8 @@ class McpServer {
         'baseUrlAway': baseUrlAway,
         'enabled': enabled,
         'transport': transport.name, // 'auto' | 'streamableHttp' | 'sse'
+        'headers': headers,
+        'isMemory': isMemory,
       };
 
   factory McpServer.fromJson(Map<String, dynamic> json) => McpServer(
@@ -74,5 +97,8 @@ class McpServer {
           (t) => t.name == (json['transport'] as String?),
           orElse: () => McpTransport.auto,
         ),
+        headers: (json['headers'] as Map<String, dynamic>? ?? {})
+            .map((k, v) => MapEntry(k, v as String)),
+        isMemory: json['isMemory'] as bool? ?? false,
       );
 }

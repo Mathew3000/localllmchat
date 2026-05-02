@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/tool_call.dart';
 import 'base_mcp_service.dart';
+import 'debug_logger.dart';
 
 /// HTTP client for a Local-MCP-server instance (Streamable-HTTP transport).
 ///
@@ -13,7 +14,16 @@ class McpService extends BaseMcpService {
   @override
   final String baseUrl;
 
-  McpService(this.baseUrl);
+  /// Extra headers injected into every request (e.g. auth tokens).
+  /// These are merged after the protocol headers so they can override defaults.
+  final Map<String, String> extraHeaders;
+
+  /// Label used in debug log entries to identify this server.
+  final String tag;
+
+  McpService(this.baseUrl, {Map<String, String>? extraHeaders, String? tag})
+      : extraHeaders = extraHeaders ?? const {},
+        tag = tag != null ? 'MCP[$tag]' : 'MCP';
 
   String? _sessionId;
 
@@ -28,6 +38,7 @@ class McpService extends BaseMcpService {
         'Content-Type': 'application/json',
         'Accept': 'application/json, text/event-stream',
         if (_sessionId != null) 'Mcp-Session-Id': _sessionId!,
+        ...extraHeaders,
       };
 
   // ── Session handshake ───────────────────────────────────────────────────────
@@ -35,14 +46,11 @@ class McpService extends BaseMcpService {
   Future<void> _ensureSession() async {
     if (_sessionId != null) return;
 
-    // 1. initialize
+    // 1. initialize  (use _headers so custom auth headers are included)
     final initResp = await http
         .post(
           Uri.parse(_endpoint),
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/event-stream',
-          },
+          headers: _headers,
           body: jsonEncode({
             'jsonrpc': '2.0',
             'id': DateTime.now().millisecondsSinceEpoch,
@@ -84,17 +92,22 @@ class McpService extends BaseMcpService {
   Future<Map<String, dynamic>> _post(Map<String, dynamic> body) async {
     await _ensureSession();
 
+    final reqBody = jsonEncode({
+      'jsonrpc': '2.0',
+      'id': DateTime.now().millisecondsSinceEpoch,
+      ...body,
+    });
+    DebugLogger.instance.logRequest(tag, 'POST', _endpoint, reqBody);
+
     final response = await http
         .post(
           Uri.parse(_endpoint),
           headers: _headers,
-          body: jsonEncode({
-            'jsonrpc': '2.0',
-            'id': DateTime.now().millisecondsSinceEpoch,
-            ...body,
-          }),
+          body: reqBody,
         )
         .timeout(const Duration(seconds: 30));
+
+    DebugLogger.instance.logResponse(tag, _endpoint, response.statusCode, response.body);
 
     // Session expired — reset and retry once.
     if (response.statusCode == 400 && response.body.contains('session')) {

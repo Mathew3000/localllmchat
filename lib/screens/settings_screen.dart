@@ -1,7 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import '../services/backup_crypto.dart';
+import '../services/debug_logger.dart';
+import '../services/sync_service.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/settings.dart';
@@ -30,6 +33,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int? _globalBgColor;
   int? _defaultUserBubbleColor;
   int? _defaultAssistantBubbleColor;
+  int? _highlightColor;
 
   @override
   void initState() {
@@ -46,6 +50,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _globalBgColor = s.backgroundColor;
     _defaultUserBubbleColor = s.defaultUserBubbleColor;
     _defaultAssistantBubbleColor = s.defaultAssistantBubbleColor;
+    _highlightColor = s.highlightColor;
   }
 
   @override
@@ -60,6 +65,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _save() async {
     final provider = context.read<AppProvider>();
     // Preserve secretPasswordHash — it's managed separately via dialogs.
+    // Preserve fields that are managed outside this form.
+    final s = provider.settings;
     await provider.updateSettings(
       AppSettings(
         baseUrlHome: _baseUrlHomeController.text.trim(),
@@ -69,12 +76,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
         systemPrompt: _systemPromptController.text,
         temperature: _temperature,
         maxTokens: _maxTokens,
-        secretPasswordHash: provider.settings.secretPasswordHash,
+        secretPasswordHash: s.secretPasswordHash,
         backgroundColor: _globalBgColor,
         defaultUserBubbleColor: _defaultUserBubbleColor,
         defaultAssistantBubbleColor: _defaultAssistantBubbleColor,
+        highlightColor: _highlightColor,
         requestTimeoutSeconds: _requestTimeoutSeconds,
-        mcpServers: provider.settings.mcpServers,
+        mcpServers: s.mcpServers,
+        syncUrl: s.syncUrl,
+        syncUsername: s.syncUsername,
+        syncAccessToken: s.syncAccessToken,
+        syncRefreshToken: s.syncRefreshToken,
+        syncLastAt: s.syncLastAt,
+        autoSyncEnabled: s.autoSyncEnabled,
+        autoSyncIntervalMinutes: s.autoSyncIntervalMinutes,
+        injectDateTime: s.injectDateTime,
+        preserveThinking: s.preserveThinking,
+        debugLogging: s.debugLogging,
+        debugLogPath: s.debugLogPath,
+        useBackend: s.useBackend,
+        backendUrl: s.backendUrl,
+        backendToken: s.backendToken,
+        backendAllowSelfSigned: s.backendAllowSelfSigned,
+        backendAwayUrl: s.backendAwayUrl,
       ),
     );
     if (mounted) {
@@ -113,6 +137,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           16 + MediaQuery.viewPaddingOf(context).bottom,
         ),
         children: [
+          const _SectionHeader(title: 'Backend Server'),
+          const _BackendCard(),
+          const SizedBox(height: 8),
           const _SectionHeader(title: 'Connection'),
           _SettingsCard(
             children: [
@@ -127,17 +154,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ),
-              const Divider(height: 1),
-              _LabeledField(
-                label: 'Away URL',
-                child: TextField(
-                  controller: _baseUrlAwayController,
-                  keyboardType: TextInputType.url,
-                  decoration: const InputDecoration(
-                    hintText: 'http://100.x.x.x:5000/v1',
-                    helperText: 'WireGuard / Tailscale — optional',
-                  ),
-                ),
+              Consumer<AppProvider>(
+                builder: (_, provider, __) {
+                  if (provider.settings.useBackend) return const SizedBox.shrink();
+                  return Column(
+                    children: [
+                      const Divider(height: 1),
+                      _LabeledField(
+                        label: 'Away URL',
+                        child: TextField(
+                          controller: _baseUrlAwayController,
+                          keyboardType: TextInputType.url,
+                          decoration: const InputDecoration(
+                            hintText: 'http://100.x.x.x:5000/v1',
+                            helperText: 'WireGuard / Tailscale — optional',
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
               const Divider(height: 1),
               _LabeledField(
@@ -286,6 +322,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 ),
               ),
+              const Divider(height: 1),
+              Consumer<AppProvider>(
+                builder: (_, provider, __) => SwitchListTile(
+                  secondary: const Icon(Icons.schedule_rounded),
+                  title: const Text('Inject date & time'),
+                  subtitle: Text(
+                    'Appends the current date and time to the system prompt',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                        ),
+                  ),
+                  value: provider.settings.injectDateTime,
+                  onChanged: (v) => provider.updateSettings(
+                    provider.settings.copyWith(injectDateTime: v),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              Consumer<AppProvider>(
+                builder: (_, provider, __) => SwitchListTile(
+                  secondary: const Icon(Icons.psychology_outlined),
+                  title: const Text('Preserve thinking history'),
+                  subtitle: Text(
+                    'Passes reasoning tokens back to the model in subsequent turns (Qwen3, DeepSeek-R1)',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                        ),
+                  ),
+                  value: provider.settings.preserveThinking,
+                  onChanged: (v) => provider.updateSettings(
+                    provider.settings.copyWith(preserveThinking: v),
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -315,14 +389,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 current: _defaultAssistantBubbleColor,
                 onPick: (c) => setState(() => _defaultAssistantBubbleColor = c),
               ),
+              const Divider(height: 1),
+              _ColorSection(
+                icon: Icons.highlight_rounded,
+                label: 'Inline highlights (==text== / <mark>)',
+                current: _highlightColor,
+                onPick: (c) => setState(() => _highlightColor = c),
+              ),
             ],
           ),
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Privacy'),
           const _SecretChatsCard(),
           const SizedBox(height: 16),
+          const _SectionHeader(title: 'Sync'),
+          const _SyncCard(),
+          const SizedBox(height: 16),
           const _SectionHeader(title: 'Backup & Restore'),
           const _BackupCard(),
+          const SizedBox(height: 16),
+          const _SectionHeader(title: 'Debug'),
+          const _DebugCard(),
           const SizedBox(height: 48),
           Center(
             child: Text(
@@ -801,7 +888,6 @@ class _ColorSection extends StatelessWidget {
   final String label;
   final int? current;
   final ValueChanged<int?> onPick;
-
   const _ColorSection({
     required this.icon,
     required this.label,
@@ -1172,6 +1258,390 @@ class _TimeoutFieldState extends State<_TimeoutField> {
   }
 }
 
+// ── Sync card ─────────────────────────────────────────────────────────────────
+
+class _SyncCard extends StatelessWidget {
+  const _SyncCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppProvider>(
+      builder: (_, provider, __) {
+        final s = provider.settings;
+        final configured = provider.syncConfigured;
+        final ready = provider.syncReady;
+        final status = provider.syncStatus;
+
+        return Card(
+          margin: EdgeInsets.zero,
+          child: Column(
+            children: [
+              // Status / login tile
+              ListTile(
+                leading: Icon(
+                  ready
+                      ? Icons.cloud_done_outlined
+                      : configured
+                          ? Icons.cloud_off_outlined
+                          : Icons.cloud_outlined,
+                  color: ready
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                ),
+                title: Text(configured
+                    ? 'Sync: ${s.syncUsername}'
+                    : 'Sync: not configured'),
+                subtitle: Text(
+                  ready
+                      ? (s.syncLastAt.isNotEmpty
+                          ? 'Last synced ${_formatSyncTime(s.syncLastAt)}'
+                          : 'Ready — tap Sync Now')
+                      : configured
+                          ? 'Key not loaded — log in to sync'
+                          : 'Set up a sync server in Setup',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                trailing: status == SyncStatus.syncing
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : null,
+              ),
+              if (provider.syncError != null) ...[
+                const Divider(height: 1),
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Text(
+                    provider.syncError!,
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.error),
+                  ),
+                ),
+              ],
+              // ── Auto-sync controls (only when logged in) ─────────────────
+              if (ready) ...[
+                const Divider(height: 1),
+                SwitchListTile(
+                  secondary: const Icon(Icons.sync_outlined),
+                  title: const Text('Auto-sync'),
+                  subtitle: Text(
+                    s.autoSyncEnabled
+                        ? 'Every ${_formatInterval(s.autoSyncIntervalMinutes)}'
+                        : 'Sync automatically in the background',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  value: s.autoSyncEnabled,
+                  onChanged: (v) => provider.saveAutoSyncSettings(
+                    enabled: v,
+                    intervalMinutes: s.autoSyncIntervalMinutes,
+                  ),
+                ),
+                if (s.autoSyncEnabled) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Interval',
+                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                        ),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [5, 10, 15, 30, 60, 120].map((mins) {
+                            final selected =
+                                s.autoSyncIntervalMinutes == mins;
+                            return ChoiceChip(
+                              label: Text(_formatInterval(mins)),
+                              selected: selected,
+                              onSelected: (_) =>
+                                  provider.saveAutoSyncSettings(
+                                enabled: true,
+                                intervalMinutes: mins,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                            );
+                          }).toList(),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+              const Divider(height: 1),
+              // Action row
+              OverflowBar(
+                alignment: MainAxisAlignment.end,
+                children: [
+                  if (configured)
+                    TextButton(
+                      onPressed: () => _confirmLogout(context, provider),
+                      child: const Text('Log out'),
+                    ),
+                  if (ready)
+                    FilledButton.tonal(
+                      onPressed: status == SyncStatus.syncing
+                          ? null
+                          : () => provider.syncNow(),
+                      child: const Text('Sync Now'),
+                    ),
+                  if (!configured)
+                    FilledButton.tonal(
+                      onPressed: () => _showSetupDialog(context, provider),
+                      child: const Text('Setup'),
+                    )
+                  else if (!ready)
+                    FilledButton.tonal(
+                      onPressed: () =>
+                          _showLoginDialog(context, provider, isSetup: false),
+                      child: const Text('Unlock'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  String _formatInterval(int minutes) {
+    if (minutes < 60) return '${minutes}m';
+    final h = minutes ~/ 60;
+    final m = minutes % 60;
+    return m == 0 ? '${h}h' : '${h}h ${m}m';
+  }
+
+  String _formatSyncTime(String iso) {
+    try {
+      final dt = DateTime.parse(iso).toLocal();
+      final now = DateTime.now();
+      final diff = now.difference(dt);
+      if (diff.inMinutes < 1) return 'just now';
+      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+      if (diff.inHours < 24) return '${diff.inHours}h ago';
+      return '${diff.inDays}d ago';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<void> _showSetupDialog(
+      BuildContext context, AppProvider provider) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _SyncSetupDialog(provider: provider),
+    );
+  }
+
+  Future<void> _showLoginDialog(BuildContext context, AppProvider provider,
+      {required bool isSetup}) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) =>
+          _SyncSetupDialog(provider: provider, loginOnly: !isSetup),
+    );
+  }
+
+  Future<void> _confirmLogout(
+      BuildContext context, AppProvider provider) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Log out of sync?'),
+        content: const Text(
+            'Your local chats are unaffected. You can log back in at any time.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Log out')),
+        ],
+      ),
+    );
+    if (ok == true) await provider.syncLogout();
+  }
+}
+
+// ── Sync setup / login dialog ─────────────────────────────────────────────────
+
+class _SyncSetupDialog extends StatefulWidget {
+  final AppProvider provider;
+  /// True when the user is already configured and just needs to re-enter their
+  /// password to load the encryption key for this session.
+  final bool loginOnly;
+
+  const _SyncSetupDialog({required this.provider, this.loginOnly = false});
+
+  @override
+  State<_SyncSetupDialog> createState() => _SyncSetupDialogState();
+}
+
+class _SyncSetupDialogState extends State<_SyncSetupDialog> {
+  final _serverCtrl = TextEditingController();
+  final _userCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
+  bool _isRegister = false;
+  bool _obscure = true;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = widget.provider.settings;
+    if (widget.loginOnly) {
+      _serverCtrl.text = s.syncUrl;
+      _userCtrl.text = s.syncUsername;
+    }
+  }
+
+  @override
+  void dispose() {
+    _serverCtrl.dispose();
+    _userCtrl.dispose();
+    _passCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final url = _serverCtrl.text.trim();
+    final user = _userCtrl.text.trim();
+    final pass = _passCtrl.text;
+
+    if ((!widget.loginOnly && url.isEmpty) || user.isEmpty || pass.isEmpty) {
+      setState(() => _error = 'All fields are required.');
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+
+    try {
+      if (_isRegister) {
+        await widget.provider.syncRegister(url, user, pass);
+      } else {
+        await widget.provider.syncLogin(
+          widget.loginOnly ? widget.provider.settings.syncUrl : url,
+          user,
+          pass,
+        );
+      }
+      if (mounted) Navigator.pop(context);
+      // Kick off an initial sync in the background.
+      widget.provider.syncNow();
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.loginOnly
+          ? 'Unlock sync'
+          : _isRegister
+              ? 'Create sync account'
+              : 'Log in to sync'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!widget.loginOnly) ...[
+              TextField(
+                controller: _serverCtrl,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'Server URL',
+                  hintText: 'http://192.168.1.10:8080',
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+            TextField(
+              controller: _userCtrl,
+              decoration: const InputDecoration(labelText: 'Username'),
+              enabled: !widget.loginOnly,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _passCtrl,
+              obscureText: _obscure,
+              decoration: InputDecoration(
+                labelText: 'Password',
+                helperText: 'Derives the encryption key — not stored anywhere.',
+                helperMaxLines: 2,
+                suffixIcon: IconButton(
+                  icon: Icon(
+                      _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                  onPressed: () => setState(() => _obscure = !_obscure),
+                ),
+              ),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!,
+                  style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12)),
+            ],
+            if (!widget.loginOnly) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Text('No account yet?'),
+                  TextButton(
+                    onPressed: _busy
+                        ? null
+                        : () =>
+                            setState(() => _isRegister = !_isRegister),
+                    child: Text(_isRegister ? 'Log in instead' : 'Register'),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: _busy ? null : () => Navigator.pop(context),
+            child: const Text('Cancel')),
+        FilledButton(
+          onPressed: _busy ? null : _submit,
+          child: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : Text(widget.loginOnly
+                  ? 'Unlock'
+                  : _isRegister
+                      ? 'Register'
+                      : 'Log in'),
+        ),
+      ],
+    );
+  }
+}
+
 // ── Backup & Restore card ─────────────────────────────────────────────────────
 
 class _BackupCard extends StatelessWidget {
@@ -1458,6 +1928,191 @@ class _BackupCard extends StatelessWidget {
   String _p(int n) => n.toString().padLeft(2, '0');
 }
 
+// ── Debug card ────────────────────────────────────────────────────────────────
+
+class _DebugCard extends StatefulWidget {
+  const _DebugCard();
+
+  @override
+  State<_DebugCard> createState() => _DebugCardState();
+}
+
+class _DebugCardState extends State<_DebugCard> {
+  bool _busy = false;
+
+  Future<String?> _pickFolder() async {
+    if (Platform.isAndroid) {
+      // On Android let file_picker resolve a writable directory via SAF.
+      return FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select debug log folder',
+      );
+    } else {
+      return FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select debug log folder',
+      );
+    }
+  }
+
+  Future<void> _toggle(AppProvider provider, bool enabled) async {
+    if (enabled) {
+      final current = provider.settings.debugLogPath;
+      final path = current.isNotEmpty ? current : await _pickFolder();
+      if (path == null || path.isEmpty) return; // user cancelled
+      await _apply(provider, enabled: true, path: path);
+    } else {
+      await _apply(provider, enabled: false, path: provider.settings.debugLogPath);
+    }
+  }
+
+  Future<void> _changeFolder(AppProvider provider) async {
+    final path = await _pickFolder();
+    if (path == null || path.isEmpty) return;
+    await _apply(provider, enabled: provider.settings.debugLogging, path: path);
+  }
+
+  Future<void> _apply(AppProvider provider,
+      {required bool enabled, required String path}) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await provider.saveDebugSettings(enabled: enabled, path: path);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppProvider>(
+      builder: (context, provider, _) {
+        final theme = Theme.of(context);
+        final cs = theme.colorScheme;
+        final s = provider.settings;
+        final logFile = DebugLogger.instance.currentFile;
+
+        return _SettingsCard(
+          children: [
+            // ── Warning banner ──────────────────────────────────────────────
+            if (s.debugLogging)
+              Container(
+                margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: cs.errorContainer.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.warning_amber_rounded,
+                        size: 16, color: cs.error),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Logs contain all message content, API keys, MCP '
+                        'auth headers, and tokens in plain text. '
+                        'Disable when not debugging.',
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: cs.onErrorContainer),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // ── Toggle ──────────────────────────────────────────────────────
+            SwitchListTile(
+              title: const Text('Debug logging'),
+              subtitle: Text(
+                'Write raw HTTP traffic to a log file',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+              value: s.debugLogging,
+              onChanged: _busy ? null : (v) => _toggle(provider, v),
+            ),
+
+            // ── Folder + active file (only when enabled) ─────────────────────
+            if (s.debugLogging) ...[
+              const Divider(height: 1),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Folder row
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Log folder',
+                                style: theme.textTheme.labelSmall
+                                    ?.copyWith(color: cs.onSurfaceVariant),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                s.debugLogPath.isEmpty ? '—' : s.debugLogPath,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  fontFamily: 'monospace',
+                                  color: s.debugLogPath.isEmpty
+                                      ? cs.error
+                                      : cs.onSurface,
+                                ),
+                                maxLines: 3,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          onPressed:
+                              _busy ? null : () => _changeFolder(provider),
+                          style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                          ),
+                          child: const Text('Change'),
+                        ),
+                      ],
+                    ),
+
+                    // Active log file
+                    if (logFile != null) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(Icons.fiber_manual_record_rounded,
+                              size: 8, color: cs.primary),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              logFile,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: cs.primary,
+                                fontFamily: 'monospace',
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
 // ── Password prompt dialog ────────────────────────────────────────────────────
 
 class _PasswordPromptDialog extends StatefulWidget {
@@ -1582,6 +2237,253 @@ class _McpNavTile extends StatelessWidget {
             ),
           ),
         );
+      },
+    );
+  }
+}
+
+// ── Backend card ──────────────────────────────────────────────────────────────
+
+class _BackendCard extends StatefulWidget {
+  const _BackendCard();
+
+  @override
+  State<_BackendCard> createState() => _BackendCardState();
+}
+
+class _BackendCardState extends State<_BackendCard> {
+  final _urlCtrl = TextEditingController();
+  final _awayUrlCtrl = TextEditingController();
+  final _userCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
+  bool _passwordVisible = false;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = context.read<AppProvider>().settings;
+    _urlCtrl.text = s.backendUrl;
+    _awayUrlCtrl.text = s.backendAwayUrl;
+  }
+
+  @override
+  void dispose() {
+    _urlCtrl.dispose();
+    _awayUrlCtrl.dispose();
+    _userCtrl.dispose();
+    _passCtrl.dispose();
+    super.dispose();
+  }
+
+  void _saveAwayUrl() {
+    context.read<AppProvider>().setBackendAwayUrl(_awayUrlCtrl.text.trim());
+  }
+
+  Future<void> _doLogin(bool register) async {
+    final p = context.read<AppProvider>();
+    final url = _urlCtrl.text.trim();
+    final user = _userCtrl.text.trim();
+    final pass = _passCtrl.text;
+    if (url.isEmpty || user.isEmpty || pass.isEmpty) {
+      setState(() => _error = 'URL, username and password are required.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      if (register) {
+        await p.backendRegister(url, user, pass);
+      } else {
+        await p.backendLogin(url, user, pass);
+      }
+      _userCtrl.clear();
+      _passCtrl.clear();
+    } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Consumer<AppProvider>(
+      builder: (context, p, _) {
+        final s = p.settings;
+        final loggedIn = s.backendToken.isNotEmpty;
+
+        return _SettingsCard(children: [
+          // ── Enable toggle ────────────────────────────────────────────────
+          SwitchListTile(
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+            title: const Text('Use backend for generation'),
+            subtitle: const Text(
+                'Generation runs on the server — stays alive if you leave Wi-Fi'),
+            value: s.useBackend,
+            onChanged: loggedIn
+                ? (v) async {
+                    await p.updateSettings(s.copyWith(useBackend: v));
+                    if (v && !p.backendConnected) {
+                      await p.backendReconnect();
+                    }
+                  }
+                : null, // disabled until logged in
+          ),
+
+          const Divider(height: 1),
+
+          // ── URL + self-signed ────────────────────────────────────────────
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: _urlCtrl,
+                  keyboardType: TextInputType.url,
+                  enabled: !loggedIn,
+                  decoration: const InputDecoration(
+                    labelText: 'Home URL',
+                    hintText: 'https://192.168.1.50',
+                    helperText: 'LAN address',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _awayUrlCtrl,
+                  keyboardType: TextInputType.url,
+                  decoration: const InputDecoration(
+                    labelText: 'Away URL',
+                    hintText: 'https://vpn.example.com',
+                    helperText: 'VPN / Tailscale — used when Home URL is unreachable',
+                  ),
+                  onSubmitted: (_) => _saveAwayUrl(),
+                  onTapOutside: (_) => _saveAwayUrl(),
+                ),
+                const SizedBox(height: 4),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Allow self-signed certificate'),
+                  value: s.backendAllowSelfSigned,
+                  onChanged: (v) => p.setBackendAllowSelfSigned(v),
+                ),
+              ],
+            ),
+          ),
+
+          const Divider(height: 1),
+
+          // ── Auth section ─────────────────────────────────────────────────
+          if (!loggedIn) ...[
+            Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: _userCtrl,
+                    decoration:
+                        const InputDecoration(labelText: 'Username'),
+                    autofillHints: const [AutofillHints.username],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _passCtrl,
+                    obscureText: !_passwordVisible,
+                    decoration: InputDecoration(
+                      labelText: 'Password',
+                      suffixIcon: IconButton(
+                        icon: Icon(_passwordVisible
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined),
+                        onPressed: () => setState(
+                            () => _passwordVisible = !_passwordVisible),
+                      ),
+                    ),
+                    autofillHints: const [AutofillHints.password],
+                    onSubmitted: (_) => _doLogin(false),
+                  ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      _error!,
+                      style: TextStyle(
+                          color: cs.error, fontSize: 12),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: _busy ? null : () => _doLogin(false),
+                          child: _busy
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white),
+                                )
+                              : const Text('Login'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _busy ? null : () => _doLogin(true),
+                          child: const Text('Register'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'Register creates the first account on a fresh backend.',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: cs.onSurfaceVariant),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ] else ...[
+            // ── Connected state ──────────────────────────────────────────
+            ListTile(
+              leading: Icon(
+                p.backendConnected
+                    ? Icons.cloud_done_outlined
+                    : Icons.cloud_off_outlined,
+                color: p.backendConnected ? cs.primary : cs.error,
+              ),
+              title: Text(p.backendConnected
+                  ? 'Connected to ${p.backendUsingAway && s.backendAwayUrl.isNotEmpty ? s.backendAwayUrl : s.backendUrl}'
+                  : 'Disconnected'),
+              subtitle: p.backendConnectError != null
+                  ? Text(p.backendConnectError!,
+                      style: TextStyle(color: cs.error, fontSize: 12))
+                  : p.backendUsingAway && s.backendAwayUrl.isNotEmpty
+                      ? Text('Using away URL',
+                          style: TextStyle(
+                              color: cs.secondary, fontSize: 12))
+                      : null,
+              trailing: TextButton(
+                onPressed: p.backendLogout,
+                child: const Text('Logout'),
+              ),
+            ),
+          ],
+        ]);
       },
     );
   }

@@ -18,10 +18,72 @@ class AppSettings {
   final int? defaultUserBubbleColor;
   /// Default ARGB colour for assistant message bubbles. Null = theme default.
   final int? defaultAssistantBubbleColor;
+  /// ARGB colour used as the background for inline highlights (==text== / <mark>).
+  /// Null = default amber (#FFD000).
+  final int? highlightColor;
   /// LLM request timeout in seconds. Default 300 s (5 min).
   final int requestTimeoutSeconds;
   /// All configured MCP servers.
   final List<McpServer> mcpServers;
+
+  // ── Sync settings ──────────────────────────────────────────────────────────
+  /// Base URL of the self-hosted sync server, e.g. http://192.168.1.10:8080
+  final String syncUrl;
+  /// Username on the sync server.
+  final String syncUsername;
+  /// JWT access token (stored locally; excluded from sync payload).
+  final String syncAccessToken;
+  /// Refresh token (stored locally; excluded from sync payload).
+  final String syncRefreshToken;
+  /// ISO-8601 timestamp of last successful sync. Null = never synced.
+  final String syncLastAt;
+
+  // ── Auto-sync settings ────────────────────────────────────────────────────
+  /// When true a periodic timer triggers sync automatically.
+  /// Device-local — excluded from sync payload.
+  final bool autoSyncEnabled;
+
+  /// How often auto-sync fires, in minutes.
+  final int autoSyncIntervalMinutes;
+
+  // ── Context injection ──────────────────────────────────────────────────────
+  /// When true, the current date & time is appended to the system prompt
+  /// before every request so the model always knows what time it is.
+  final bool injectDateTime;
+
+  /// When true, assistant `<think>…</think>` blocks from previous turns are
+  /// preserved in the conversation history sent to the LLM.
+  ///
+  /// Sent as a `reasoning_content` field on the assistant message (OpenAI
+  /// format supported by vLLM / SGLang) rather than in `content`, so servers
+  /// that don't understand it simply ignore the extra field.
+  /// Useful for Qwen3, DeepSeek-R1, and other reasoning models where
+  /// continuity of thought improves multi-turn quality.
+  final bool preserveThinking;
+
+  // ── Debug settings ─────────────────────────────────────────────────────────
+  /// When true, all raw HTTP traffic is written to [debugLogPath].
+  /// Excluded from sync — this is a per-device developer setting.
+  final bool debugLogging;
+
+  /// Folder path where debug log files are written. Empty = not configured.
+  final String debugLogPath;
+
+  // ── Backend generation server ──────────────────────────────────────────────
+  /// When true, all generation goes through the backend server instead of
+  /// calling the LLM API directly.  Device-local — excluded from sync.
+  final bool useBackend;
+  /// Base URL of the backend server, e.g. https://192.168.1.50
+  /// Device-local — excluded from sync.
+  final String backendUrl;
+  /// JWT access token for the backend server.  Device-local — excluded from sync.
+  final String backendToken;
+  /// When true, TLS certificate errors are ignored (for self-signed LAN certs).
+  /// Device-local — excluded from sync.
+  final bool backendAllowSelfSigned;
+  /// Away URL for the backend server (VPN / Tailscale).  Used automatically
+  /// when [backendUrl] (home) is unreachable.  Device-local — excluded from sync.
+  final String backendAwayUrl;
 
   const AppSettings({
     this.baseUrlHome = 'http://192.168.1.1:5000/v1',
@@ -37,8 +99,25 @@ class AppSettings {
     this.backgroundColor,
     this.defaultUserBubbleColor,
     this.defaultAssistantBubbleColor,
+    this.highlightColor,
     this.requestTimeoutSeconds = 300,
     this.mcpServers = const [],
+    this.syncUrl = '',
+    this.syncUsername = '',
+    this.syncAccessToken = '',
+    this.syncRefreshToken = '',
+    this.syncLastAt = '',
+    this.autoSyncEnabled = false,
+    this.autoSyncIntervalMinutes = 30,
+    this.injectDateTime = false,
+    this.preserveThinking = false,
+    this.debugLogging = false,
+    this.debugLogPath = '',
+    this.useBackend = false,
+    this.backendUrl = '',
+    this.backendToken = '',
+    this.backendAllowSelfSigned = false,
+    this.backendAwayUrl = '',
   });
 
   /// The URL that is currently active based on [useAwayUrl].
@@ -64,8 +143,25 @@ class AppSettings {
     Object? backgroundColor = _unset,
     Object? defaultUserBubbleColor = _unset,
     Object? defaultAssistantBubbleColor = _unset,
+    Object? highlightColor = _unset,
     int? requestTimeoutSeconds,
     List<McpServer>? mcpServers,
+    String? syncUrl,
+    String? syncUsername,
+    String? syncAccessToken,
+    String? syncRefreshToken,
+    String? syncLastAt,
+    bool? autoSyncEnabled,
+    int? autoSyncIntervalMinutes,
+    bool? injectDateTime,
+    bool? preserveThinking,
+    bool? debugLogging,
+    String? debugLogPath,
+    bool? useBackend,
+    String? backendUrl,
+    String? backendToken,
+    bool? backendAllowSelfSigned,
+    String? backendAwayUrl,
   }) =>
       AppSettings(
         baseUrlHome: baseUrlHome ?? this.baseUrlHome,
@@ -87,9 +183,29 @@ class AppSettings {
             identical(defaultAssistantBubbleColor, _unset)
                 ? this.defaultAssistantBubbleColor
                 : defaultAssistantBubbleColor as int?,
+        highlightColor: identical(highlightColor, _unset)
+            ? this.highlightColor
+            : highlightColor as int?,
         requestTimeoutSeconds:
             requestTimeoutSeconds ?? this.requestTimeoutSeconds,
         mcpServers: mcpServers ?? this.mcpServers,
+        syncUrl: syncUrl ?? this.syncUrl,
+        syncUsername: syncUsername ?? this.syncUsername,
+        syncAccessToken: syncAccessToken ?? this.syncAccessToken,
+        syncRefreshToken: syncRefreshToken ?? this.syncRefreshToken,
+        syncLastAt: syncLastAt ?? this.syncLastAt,
+        autoSyncEnabled: autoSyncEnabled ?? this.autoSyncEnabled,
+        autoSyncIntervalMinutes: autoSyncIntervalMinutes ?? this.autoSyncIntervalMinutes,
+        injectDateTime: injectDateTime ?? this.injectDateTime,
+        preserveThinking: preserveThinking ?? this.preserveThinking,
+        debugLogging: debugLogging ?? this.debugLogging,
+        debugLogPath: debugLogPath ?? this.debugLogPath,
+        useBackend: useBackend ?? this.useBackend,
+        backendUrl: backendUrl ?? this.backendUrl,
+        backendToken: backendToken ?? this.backendToken,
+        backendAllowSelfSigned:
+            backendAllowSelfSigned ?? this.backendAllowSelfSigned,
+        backendAwayUrl: backendAwayUrl ?? this.backendAwayUrl,
       );
 
   Map<String, dynamic> toJson() => {
@@ -105,9 +221,47 @@ class AppSettings {
         'backgroundColor': backgroundColor,
         'defaultUserBubbleColor': defaultUserBubbleColor,
         'defaultAssistantBubbleColor': defaultAssistantBubbleColor,
+        'highlightColor': highlightColor,
         'requestTimeoutSeconds': requestTimeoutSeconds,
         'mcpServers': mcpServers.map((s) => s.toJson()).toList(),
+        'syncUrl': syncUrl,
+        'syncUsername': syncUsername,
+        'syncAccessToken': syncAccessToken,
+        'syncRefreshToken': syncRefreshToken,
+        'syncLastAt': syncLastAt,
+        'autoSyncEnabled': autoSyncEnabled,
+        'autoSyncIntervalMinutes': autoSyncIntervalMinutes,
+        'injectDateTime': injectDateTime,
+        'preserveThinking': preserveThinking,
+        'debugLogging': debugLogging,
+        'debugLogPath': debugLogPath,
+        'useBackend': useBackend,
+        'backendUrl': backendUrl,
+        'backendToken': backendToken,
+        'backendAllowSelfSigned': backendAllowSelfSigned,
+        'backendAwayUrl': backendAwayUrl,
       };
+
+  /// Settings JSON for the sync payload — excludes device-specific credentials
+  /// so tokens and last-sync timestamps are not overwritten on other devices.
+  Map<String, dynamic> toSyncJson() {
+    final j = toJson();
+    // Exclude device-specific fields that should not overwrite other devices.
+    j.remove('syncAccessToken');
+    j.remove('syncRefreshToken');
+    j.remove('syncLastAt');
+    j.remove('autoSyncEnabled');
+    j.remove('autoSyncIntervalMinutes');
+    j.remove('debugLogging');
+    j.remove('debugLogPath');
+    // Backend credentials are device-local — never sync them.
+    j.remove('useBackend');
+    j.remove('backendUrl');
+    j.remove('backendToken');
+    j.remove('backendAllowSelfSigned');
+    j.remove('backendAwayUrl');
+    return j;
+  }
 
   factory AppSettings.fromJson(Map<String, dynamic> json) {
     // ── Migrate old single-server config ────────────────────────────────────
@@ -142,9 +296,27 @@ class AppSettings {
       defaultUserBubbleColor: json['defaultUserBubbleColor'] as int?,
       defaultAssistantBubbleColor:
           json['defaultAssistantBubbleColor'] as int?,
+      highlightColor: json['highlightColor'] as int?,
       requestTimeoutSeconds:
           json['requestTimeoutSeconds'] as int? ?? 300,
       mcpServers: mcpServers,
+      syncUrl: json['syncUrl'] as String? ?? '',
+      syncUsername: json['syncUsername'] as String? ?? '',
+      syncAccessToken: json['syncAccessToken'] as String? ?? '',
+      syncRefreshToken: json['syncRefreshToken'] as String? ?? '',
+      syncLastAt: json['syncLastAt'] as String? ?? '',
+      autoSyncEnabled: json['autoSyncEnabled'] as bool? ?? false,
+      autoSyncIntervalMinutes: json['autoSyncIntervalMinutes'] as int? ?? 30,
+      injectDateTime: json['injectDateTime'] as bool? ?? false,
+      preserveThinking: json['preserveThinking'] as bool? ?? false,
+      debugLogging: json['debugLogging'] as bool? ?? false,
+      debugLogPath: json['debugLogPath'] as String? ?? '',
+      useBackend: json['useBackend'] as bool? ?? false,
+      backendUrl: json['backendUrl'] as String? ?? '',
+      backendToken: json['backendToken'] as String? ?? '',
+      backendAllowSelfSigned:
+          json['backendAllowSelfSigned'] as bool? ?? false,
+      backendAwayUrl: json['backendAwayUrl'] as String? ?? '',
     );
   }
 }

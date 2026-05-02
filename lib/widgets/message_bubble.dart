@@ -1,6 +1,9 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
+import 'package:url_launcher/url_launcher.dart';
 import '../models/message.dart';
 import 'color_picker.dart' show onColor;
 
@@ -71,12 +74,20 @@ class MessageBubble extends StatelessWidget {
   final Color? userBubbleColor;
   /// Custom background colour for assistant bubbles. Null = theme default.
   final Color? assistantBubbleColor;
+  /// Background colour for ==highlighted== / <mark> spans. Null = amber.
+  final Color? highlightColor;
+  /// Called when the user confirms deletion.
+  /// [withResponse] is true when a user message is deleted together with
+  /// the following AI response.
+  final void Function(bool withResponse)? onDelete;
 
   const MessageBubble({
     super.key,
     required this.message,
     this.userBubbleColor,
     this.assistantBubbleColor,
+    this.highlightColor,
+    this.onDelete,
   });
 
   @override
@@ -91,55 +102,73 @@ class MessageBubble extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Row(
-        mainAxisAlignment:
-            isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.end,
+      child: Column(
+        crossAxisAlignment:
+            isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         children: [
-          if (!isUser) ...[
-            _Avatar(isUser: false, colorScheme: colorScheme),
-            const SizedBox(width: 8),
-          ],
-          Flexible(
-            child: GestureDetector(
-              onLongPress: () => _copyToClipboard(context),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: bubbleBg,
-                  borderRadius: BorderRadius.only(
-                    topLeft: const Radius.circular(18),
-                    topRight: const Radius.circular(18),
-                    bottomLeft: Radius.circular(isUser ? 18 : 4),
-                    bottomRight: Radius.circular(isUser ? 4 : 18),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: isUser
-                    ? SelectableText(
-                        message.content,
-                        style: TextStyle(
-                          color: userBubbleColor != null
-                              ? onColor(userBubbleColor!)
-                              : colorScheme.onPrimary,
-                          fontSize: 15,
-                          height: 1.4,
+          Row(
+            mainAxisAlignment:
+                isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (!isUser) ...[
+                _Avatar(isUser: false, colorScheme: colorScheme),
+                const SizedBox(width: 8),
+              ],
+              Flexible(
+                child: GestureDetector(
+                  onLongPress: () => _copyToClipboard(context),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: bubbleBg,
+                      borderRadius: BorderRadius.only(
+                        topLeft: const Radius.circular(18),
+                        topRight: const Radius.circular(18),
+                        bottomLeft: Radius.circular(isUser ? 18 : 4),
+                        bottomRight: Radius.circular(isUser ? 4 : 18),
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.08),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
                         ),
-                      )
-                    : _buildAssistantContent(context, theme),
+                      ],
+                    ),
+                    child: isUser
+                        ? _buildUserContent(context, colorScheme)
+                        : _buildAssistantContent(context, theme, highlightColor),
+                  ),
+                ),
               ),
+              if (isUser) ...[
+                const SizedBox(width: 8),
+                _Avatar(isUser: true, colorScheme: colorScheme),
+              ],
+            ],
+          ),
+          // Footer: copy + delete buttons, indented past the avatar.
+          Padding(
+            padding: EdgeInsets.only(
+              top: 2,
+              left: isUser ? 0 : 36, // 28 avatar + 8 gap
+              right: isUser ? 36 : 0,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _CopyButton(onTap: () => _copyToClipboard(context)),
+                if (onDelete != null && !message.isStreaming) ...[
+                  const SizedBox(width: 10),
+                  _DeleteButton(
+                    onTap: () => _confirmDelete(context, isUser),
+                  ),
+                ],
+              ],
             ),
           ),
-          if (isUser) ...[
-            const SizedBox(width: 8),
-            _Avatar(isUser: true, colorScheme: colorScheme),
-          ],
         ],
       ),
     );
@@ -148,8 +177,12 @@ class MessageBubble extends StatelessWidget {
   /// Wraps [_AssistantContent] in an adapted [Theme] when a custom bubble
   /// colour is set, so all descendant widgets (markdown, thinking block, etc.)
   /// automatically use legible foreground colours.
-  Widget _buildAssistantContent(BuildContext context, ThemeData theme) {
-    if (assistantBubbleColor == null) return _AssistantContent(message: message);
+  Widget _buildAssistantContent(
+      BuildContext context, ThemeData theme, Color? highlightColor) {
+    if (assistantBubbleColor == null) {
+      return _AssistantContent(
+          message: message, highlightColor: highlightColor);
+    }
 
     final bg = assistantBubbleColor!;
     final fg = onColor(bg);
@@ -172,8 +205,109 @@ class MessageBubble extends StatelessWidget {
           surfaceContainerHighest: innerBg,
         ),
       ),
-      child: _AssistantContent(message: message),
+      child: _AssistantContent(
+          message: message, highlightColor: highlightColor),
     );
+  }
+
+  Widget _buildUserContent(BuildContext context, ColorScheme cs) {
+    final textColor =
+        userBubbleColor != null ? onColor(userBubbleColor!) : cs.onPrimary;
+    final textStyle = TextStyle(color: textColor, fontSize: 15, height: 1.4);
+    final hasImages = message.images.isNotEmpty;
+    final hasText = message.content.isNotEmpty;
+
+    if (!hasImages) {
+      return SelectableText(message.content, style: textStyle);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Images grid (max 2 per row)
+        Wrap(
+          spacing: 4,
+          runSpacing: 4,
+          alignment: WrapAlignment.end,
+          children: message.images.map((dataUrl) {
+            try {
+              final base64Data = dataUrl.contains(',')
+                  ? dataUrl.split(',').last
+                  : dataUrl;
+              final bytes = base64Decode(base64Data);
+              return ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.memory(
+                  bytes,
+                  width: 160,
+                  height: 160,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image),
+                ),
+              );
+            } catch (_) {
+              return const Icon(Icons.broken_image);
+            }
+          }).toList(),
+        ),
+        if (hasText) ...[
+          const SizedBox(height: 6),
+          SelectableText(message.content, style: textStyle),
+        ],
+      ],
+    );
+  }
+
+  Future<void> _confirmDelete(BuildContext context, bool isUser) async {
+    final cs = Theme.of(context).colorScheme;
+    if (isUser) {
+      // Offer two options: delete just this message, or this + AI response.
+      final result = await showDialog<bool?>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Delete message?'),
+          content: const Text(
+              'Remove just your message, or also the AI\'s response?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Message only'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: FilledButton.styleFrom(backgroundColor: cs.error),
+              child: const Text('Both'),
+            ),
+          ],
+        ),
+      );
+      if (result != null) onDelete?.call(result);
+    } else {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Delete response?'),
+          content: const Text('This will remove the AI\'s response.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: FilledButton.styleFrom(backgroundColor: cs.error),
+              child: const Text('Delete'),
+            ),
+          ],
+        ),
+      );
+      if (ok == true) onDelete?.call(false);
+    }
   }
 
   void _copyToClipboard(BuildContext context) {
@@ -192,7 +326,9 @@ class MessageBubble extends StatelessWidget {
 
 class _AssistantContent extends StatelessWidget {
   final Message message;
-  const _AssistantContent({required this.message});
+  final Color? highlightColor;
+  const _AssistantContent(
+      {required this.message, this.highlightColor});
 
   @override
   Widget build(BuildContext context) {
@@ -239,6 +375,7 @@ class _AssistantContent extends StatelessWidget {
           _MarkdownContent(
             text: contentSegments.map((s) => s.text).join(),
             theme: theme,
+            highlightColor: highlightColor,
           ),
         ],
 
@@ -252,18 +389,87 @@ class _AssistantContent extends StatelessWidget {
   }
 }
 
+// ── Markdown highlight syntax: ==text== → <mark> element ─────────────────────
+
+class _MarkSyntax extends md.InlineSyntax {
+  _MarkSyntax() : super(r'==([^=\n]+)==');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element.text('mark', match[1]!));
+    return true;
+  }
+}
+
+// ── Builder that renders <mark> elements with highlight bg + contrast text ────
+
+class _MarkBuilder extends MarkdownElementBuilder {
+  final Color bg;
+  final Color fg;
+  _MarkBuilder({required this.bg, required this.fg});
+
+  @override
+  Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: Text(
+        element.textContent,
+        style: (preferredStyle ?? const TextStyle()).copyWith(
+          color: fg,
+          backgroundColor: Colors.transparent,
+          fontSize: 15,
+          height: 1.4,
+        ),
+      ),
+    );
+  }
+}
+
 // ── Markdown renderer ─────────────────────────────────────────────────────────
 
 class _MarkdownContent extends StatelessWidget {
   final String text;
   final ThemeData theme;
-  const _MarkdownContent({required this.text, required this.theme});
+  /// Highlight background colour. Null = amber (#FFD000).
+  final Color? highlightColor;
+
+  const _MarkdownContent({
+    required this.text,
+    required this.theme,
+    this.highlightColor,
+  });
+
+  /// Convert <mark>…</mark> HTML tags to ==…== so _MarkSyntax can handle them.
+  static String _preprocess(String src) => src.replaceAllMapped(
+        RegExp(r'<mark>(.*?)</mark>', caseSensitive: false, dotAll: true),
+        (m) => '==${m[1]}==',
+      );
 
   @override
   Widget build(BuildContext context) {
+    final highlightBg = highlightColor ?? const Color(0xFFFFD000);
+    final highlightFg = onColor(highlightBg);
+
     return MarkdownBody(
-      data: text,
+      data: _preprocess(text),
       selectable: true,
+      inlineSyntaxes: [_MarkSyntax()],
+      builders: {
+        'mark': _MarkBuilder(bg: highlightBg, fg: highlightFg),
+      },
+      onTapLink: (text, href, title) async {
+        if (href == null) return;
+        final uri = Uri.tryParse(href);
+        if (uri == null) return;
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      },
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
         p: theme.textTheme.bodyMedium?.copyWith(
           fontSize: 15,
@@ -279,6 +485,21 @@ class _MarkdownContent extends StatelessWidget {
           color: theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(8),
         ),
+        // Override the default Colors.blue.shade100 which is unreadable in
+        // dark mode (white text on pale blue). Use a theme-aware background
+        // with a primary-coloured left accent bar instead.
+        blockquoteDecoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(4),
+          border: Border(
+            left: BorderSide(
+              color: theme.colorScheme.primary.withValues(alpha: 0.7),
+              width: 3,
+            ),
+          ),
+        ),
+        blockquotePadding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       ),
     );
   }
@@ -500,6 +721,59 @@ class _TypingIndicatorState extends State<_TypingIndicator>
           ),
         );
       }),
+    );
+  }
+}
+
+// ── Copy button ───────────────────────────────────────────────────────────────
+
+class _CopyButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _CopyButton({required this.onTap});
+
+  @override
+  State<_CopyButton> createState() => _CopyButtonState();
+}
+
+class _CopyButtonState extends State<_CopyButton> {
+  bool _copied = false;
+
+  Future<void> _handleTap() async {
+    widget.onTap();
+    setState(() => _copied = true);
+    await Future.delayed(const Duration(seconds: 2));
+    if (mounted) setState(() => _copied = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
+    return GestureDetector(
+      onTap: _handleTap,
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 200),
+        child: _copied
+            ? Icon(Icons.check_rounded,
+                key: const ValueKey('check'), size: 14, color: color)
+            : Icon(Icons.copy_rounded,
+                key: const ValueKey('copy'), size: 14, color: color),
+      ),
+    );
+  }
+}
+
+// ── Delete button ─────────────────────────────────────────────────────────────
+
+class _DeleteButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _DeleteButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
+    return GestureDetector(
+      onTap: onTap,
+      child: Icon(Icons.delete_outline_rounded, size: 14, color: color),
     );
   }
 }
