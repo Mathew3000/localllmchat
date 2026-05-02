@@ -1278,7 +1278,9 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
             content: '',
             isStreaming: true,
           );
-          _activeConversation?.messages.add(newMsg);
+          // Always append to the owning conversation, not the currently
+          // visible one — the user may have switched chats mid-generation.
+          _conversationById(cid)?.messages.add(newMsg);
           _streamingBackendMsg = newMsg;
           notifyListeners();
         }
@@ -1294,7 +1296,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           _streamingBackendMsg?.isStreaming = false;
           _streamingBackendMsg = null;
 
-          // Show a tool-execution placeholder in the conversation.
+          // Show a tool-execution placeholder in the owning conversation,
+          // regardless of which chat the user is currently viewing.
           final toolMsg = Message(
             role: Role.tool,
             content: '',
@@ -1302,13 +1305,22 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
             toolName: toolName,
             isStreaming: true,
           );
-          _activeConversation?.messages.add(toolMsg);
+          _conversationById(cid)?.messages.add(toolMsg);
           notifyListeners();
 
           // Execute asynchronously and relay result back to backend.
           _executeRelayedToolCall(cid, callId, toolName, argsJson, toolMsg);
         }
     }
+  }
+
+  /// Looks up a conversation by id from the in-memory list.
+  /// Returns null if not found.
+  Conversation? _conversationById(String id) {
+    for (final c in _conversations) {
+      if (c.id == id) return c;
+    }
+    return null;
   }
 
   /// Executes an MCP tool requested by the backend and sends the result back.
