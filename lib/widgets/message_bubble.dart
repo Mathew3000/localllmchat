@@ -287,15 +287,42 @@ class MessageBubble extends StatelessWidget {
   }
 
   Widget _buildUserContent(BuildContext context, ColorScheme cs) {
-    final textColor =
-        userBubbleColor != null ? onColor(userBubbleColor!) : cs.onPrimary;
-    final textStyle = TextStyle(color: textColor, fontSize: 15, height: 1.4);
+    // Adapt the theme so markdown text, code blocks, etc. use legible colours
+    // against the user bubble background (primary or custom colour).
+    final theme = Theme.of(context);
+    final bg = userBubbleColor ?? cs.primary;
+    final fg = onColor(bg);
+    final fgVariant = fg.withValues(alpha: 0.7);
+    final lum = bg.computeLuminance();
+    final innerBg = Color.alphaBlend(
+      lum > 0.45
+          ? Colors.black.withValues(alpha: 0.07)
+          : Colors.white.withValues(alpha: 0.10),
+      bg,
+    );
+    final adaptedTheme = theme.copyWith(
+      colorScheme: theme.colorScheme.copyWith(
+        onSurface: fg,
+        onSurfaceVariant: fgVariant,
+        outlineVariant: fgVariant.withValues(alpha: 0.35),
+        surfaceContainerHigh: innerBg,
+        surfaceContainerHighest: innerBg,
+      ),
+    );
+
     final hasImages = message.images.isNotEmpty;
     final hasText = message.content.isNotEmpty;
 
-    if (!hasImages) {
-      return SelectableText(message.content, style: textStyle);
-    }
+    Widget mdContent = Theme(
+      data: adaptedTheme,
+      child: _MarkdownContent(
+        text: message.content,
+        theme: adaptedTheme,
+        highlightColor: highlightColor,
+      ),
+    );
+
+    if (!hasImages) return mdContent;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.end,
@@ -329,7 +356,7 @@ class MessageBubble extends StatelessWidget {
         ),
         if (hasText) ...[
           const SizedBox(height: 6),
-          SelectableText(message.content, style: textStyle),
+          mdContent,
         ],
       ],
     );
