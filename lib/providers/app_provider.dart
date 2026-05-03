@@ -103,6 +103,11 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   DateTime? _memoryCacheTime;
   static const _memoryCacheDuration = Duration(minutes: 5);
 
+  // ── Token usage (prompt tokens per conversation) ──────────────────────────
+  /// Last known prompt token count per conversation ID.
+  final Map<String, int> _promptTokens = {};
+  final Map<String, int> _completionTokens = {};
+
   // ── Getters ───────────────────────────────────────────────────────────────
 
   AppSettings get settings => _settings;
@@ -120,6 +125,16 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get hasSecretPassword => _settings.secretPasswordHash.isNotEmpty;
   bool get usingAwayUrl => _usingAway;
   bool get mcpActive => _mcpActive;
+
+  /// Prompt tokens used in the active conversation (null = not yet known).
+  int? get activePromptTokens => _activeConversation != null
+      ? _promptTokens[_activeConversation!.id]
+      : null;
+
+  /// Completion tokens from the last turn in the active conversation.
+  int? get activeCompletionTokens => _activeConversation != null
+      ? _completionTokens[_activeConversation!.id]
+      : null;
 
   // Backend getters
   bool get backendConnecting => _backendConnecting;
@@ -1222,10 +1237,18 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           notifyListeners();
         }
 
-      case BEMessageComplete(conversationId: final cid):
+      case BEMessageComplete(
+          conversationId: final cid,
+          promptTokens: final pt,
+          completionTokens: final ct,
+        ):
         if (cid == _streamingBackendConvId) {
           _streamingBackendMsg?.isStreaming = false;
           _streamingBackendMsg = null;
+          if (pt != null) {
+            _promptTokens[cid] = pt;
+            _completionTokens[cid] = ct ?? 0;
+          }
           final completedConvId = _streamingBackendConvId;
           _streamingBackendConvId = null;
           _isStreaming = false;
@@ -1400,7 +1423,14 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           .where((m) => m.id != assistantMsg.id)
           .toList();
 
-      _streamSub = api.streamChat(history).listen(
+      final convId = _activeConversation!.id;
+      _streamSub = api.streamChat(
+        history,
+        onUsage: (prompt, completion) {
+          _promptTokens[convId] = prompt;
+          _completionTokens[convId] = completion;
+        },
+      ).listen(
         (chunk) {
           assistantMsg.content += chunk;
           notifyListeners();
@@ -1470,6 +1500,13 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         final resp = response;
         if (resp == null) break;
+
+        // Capture token usage from this turn.
+        if (resp.promptTokens != null) {
+          _promptTokens[_activeConversation!.id] = resp.promptTokens!;
+          _completionTokens[_activeConversation!.id] =
+              resp.completionTokens ?? 0;
+        }
 
         if (resp.hasToolCalls) {
           // Keep the streaming placeholder if it accumulated thinking content

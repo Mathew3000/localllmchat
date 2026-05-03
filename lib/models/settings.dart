@@ -61,6 +61,10 @@ class AppSettings {
   /// continuity of thought improves multi-turn quality.
   final bool preserveThinking;
 
+  /// The model's context window size in tokens, used to render the
+  /// context-usage progress indicator in the chat header.
+  final int contextWindowTokens;
+
   // ── Debug settings ─────────────────────────────────────────────────────────
   /// When true, all raw HTTP traffic is written to [debugLogPath].
   /// Excluded from sync — this is a per-device developer setting.
@@ -111,6 +115,7 @@ class AppSettings {
     this.autoSyncIntervalMinutes = 30,
     this.injectDateTime = false,
     this.preserveThinking = false,
+    this.contextWindowTokens = 32768,
     this.debugLogging = false,
     this.debugLogPath = '',
     this.useBackend = false,
@@ -155,6 +160,7 @@ class AppSettings {
     int? autoSyncIntervalMinutes,
     bool? injectDateTime,
     bool? preserveThinking,
+    int? contextWindowTokens,
     bool? debugLogging,
     String? debugLogPath,
     bool? useBackend,
@@ -198,6 +204,7 @@ class AppSettings {
         autoSyncIntervalMinutes: autoSyncIntervalMinutes ?? this.autoSyncIntervalMinutes,
         injectDateTime: injectDateTime ?? this.injectDateTime,
         preserveThinking: preserveThinking ?? this.preserveThinking,
+        contextWindowTokens: contextWindowTokens ?? this.contextWindowTokens,
         debugLogging: debugLogging ?? this.debugLogging,
         debugLogPath: debugLogPath ?? this.debugLogPath,
         useBackend: useBackend ?? this.useBackend,
@@ -233,6 +240,7 @@ class AppSettings {
         'autoSyncIntervalMinutes': autoSyncIntervalMinutes,
         'injectDateTime': injectDateTime,
         'preserveThinking': preserveThinking,
+        'contextWindowTokens': contextWindowTokens,
         'debugLogging': debugLogging,
         'debugLogPath': debugLogPath,
         'useBackend': useBackend,
@@ -309,6 +317,7 @@ class AppSettings {
       autoSyncIntervalMinutes: json['autoSyncIntervalMinutes'] as int? ?? 30,
       injectDateTime: json['injectDateTime'] as bool? ?? false,
       preserveThinking: json['preserveThinking'] as bool? ?? false,
+      contextWindowTokens: json['contextWindowTokens'] as int? ?? 32768,
       debugLogging: json['debugLogging'] as bool? ?? false,
       debugLogPath: json['debugLogPath'] as String? ?? '',
       useBackend: json['useBackend'] as bool? ?? false,

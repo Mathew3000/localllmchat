@@ -122,6 +122,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         title: p.activeConversation?.title ?? 'LoomChat',
                         actions: actions,
                         bgColor: bgColor,
+                        promptTokens: p.activePromptTokens,
+                        contextWindow: p.settings.contextWindowTokens,
                       ),
                       Expanded(child: chatPanel),
                     ],
@@ -143,13 +145,10 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: const Icon(Icons.menu_rounded),
               onPressed: () => _scaffoldKey.currentState?.openDrawer(),
             ),
-            title: Text(
-              p.activeConversation?.title ?? 'LoomChat',
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w600),
+            title: _AppBarTitle(
+              title: p.activeConversation?.title ?? 'LoomChat',
+              promptTokens: p.activePromptTokens,
+              contextWindow: p.settings.contextWindowTokens,
             ),
             actions: actions,
             elevation: 0,
@@ -249,21 +248,70 @@ class _DesktopSidebar extends StatelessWidget {
 
 // ── Desktop: thin header bar above the chat panel ─────────────────────────────
 
-class _DesktopChatHeader extends StatelessWidget {
-  final String title;
-  final List<Widget> actions;
-  final Color? bgColor;
+// ── Shared token-count formatter ──────────────────────────────────────────────
 
-  const _DesktopChatHeader({
+String _fmtTokens(int n) =>
+    n >= 1000 ? '${(n / 1000).toStringAsFixed(1)}k' : '$n';
+
+// ── Mobile app bar title with optional context bar ────────────────────────────
+
+class _AppBarTitle extends StatelessWidget {
+  final String title;
+  final int? promptTokens;
+  final int contextWindow;
+
+  const _AppBarTitle({
     required this.title,
-    required this.actions,
-    this.bgColor,
+    required this.promptTokens,
+    required this.contextWindow,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final pt = promptTokens;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          title,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.titleMedium
+              ?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        if (pt != null) ...[
+          const SizedBox(height: 2),
+          _ContextBar(promptTokens: pt, contextWindow: contextWindow, cs: cs),
+        ],
+      ],
+    );
+  }
+}
+
+// ── Desktop chat header ───────────────────────────────────────────────────────
+
+class _DesktopChatHeader extends StatelessWidget {
+  final String title;
+  final List<Widget> actions;
+  final Color? bgColor;
+  final int? promptTokens;
+  final int contextWindow;
+
+  const _DesktopChatHeader({
+    required this.title,
+    required this.actions,
+    this.bgColor,
+    this.promptTokens,
+    this.contextWindow = 32768,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final pt = promptTokens;
     return Material(
       color: bgColor ?? cs.surface,
       elevation: 0,
@@ -280,17 +328,82 @@ class _DesktopChatHeader extends StatelessWidget {
           children: [
             const SizedBox(width: 12),
             Expanded(
-              child: Text(
-                title,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w600),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    title,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  if (pt != null) ...[
+                    const SizedBox(height: 2),
+                    _ContextBar(
+                        promptTokens: pt,
+                        contextWindow: contextWindow,
+                        cs: cs),
+                  ],
+                ],
               ),
             ),
             ...actions,
           ],
         ),
       ),
+    );
+  }
+}
+
+// ── Shared context usage bar ──────────────────────────────────────────────────
+
+class _ContextBar extends StatelessWidget {
+  final int promptTokens;
+  final int contextWindow;
+  final ColorScheme cs;
+
+  const _ContextBar({
+    required this.promptTokens,
+    required this.contextWindow,
+    required this.cs,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = (promptTokens / contextWindow).clamp(0.0, 1.0);
+    final pct = (ratio * 100).round();
+    final Color barColor = ratio < 0.7
+        ? cs.primary
+        : ratio < 0.9
+            ? cs.tertiary
+            : cs.error;
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 80,
+          height: 4,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: ratio,
+              backgroundColor: cs.outlineVariant.withValues(alpha: 0.3),
+              valueColor: AlwaysStoppedAnimation(barColor),
+              minHeight: 4,
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          '${_fmtTokens(promptTokens)} / ${_fmtTokens(contextWindow)} ($pct%)',
+          style: TextStyle(
+            fontSize: 10,
+            color: cs.onSurfaceVariant,
+            height: 1,
+          ),
+        ),
+      ],
     );
   }
 }

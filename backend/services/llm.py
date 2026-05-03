@@ -224,6 +224,7 @@ async def run_generation(
             tool_call_accum: dict[int, dict] = {}
             in_thinking = False
             thinking_closed = False
+            usage_data: dict | None = None
 
             # Load current history, excluding the empty placeholder
             result = await db.execute(
@@ -278,6 +279,9 @@ async def run_generation(
                             break
                         try:
                             chunk = json.loads(data)
+                            # Capture usage when present (may be in a chunk with empty choices).
+                            if chunk.get("usage"):
+                                usage_data = chunk["usage"]
                             choices = chunk.get("choices", [])
                             if not choices:
                                 continue
@@ -444,7 +448,7 @@ async def run_generation(
             conv.updated_at = datetime.now(timezone.utc)
             await db.commit()
 
-            await _send({
+            complete_payload: dict = {
                 "type": "message_complete",
                 "conversation_id": conversation_id,
                 "message": {
@@ -454,7 +458,10 @@ async def run_generation(
                     "images": [],
                     "created_at": assistant_msg.created_at.isoformat(),
                 },
-            })
+            }
+            if usage_data:
+                complete_payload["usage"] = usage_data
+            await _send(complete_payload)
             return  # done
 
         # ── Max iterations reached ────────────────────────────────────────────
@@ -463,7 +470,7 @@ async def run_generation(
             assistant_msg.content = final_content
             conv.updated_at = datetime.now(timezone.utc)
             await db.commit()
-        await _send({
+        max_iter_payload: dict = {
             "type": "message_complete",
             "conversation_id": conversation_id,
             "message": {
@@ -473,7 +480,10 @@ async def run_generation(
                 "images": [],
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
-        })
+        }
+        if usage_data:
+            max_iter_payload["usage"] = usage_data
+        await _send(max_iter_payload)
 
     except asyncio.CancelledError:
         hub.cancel_tool_futures(conversation_id)

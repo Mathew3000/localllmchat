@@ -27,6 +27,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _systemPromptController;
   late double _temperature;
   late int _maxTokens;
+  late int _contextWindowTokens;
   String? _selectedModel;
   bool _apiKeyVisible = false;
   late int _requestTimeoutSeconds;
@@ -45,6 +46,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _systemPromptController = TextEditingController(text: s.systemPrompt);
     _temperature = s.temperature;
     _maxTokens = s.maxTokens;
+    _contextWindowTokens = s.contextWindowTokens;
     _selectedModel = s.selectedModel.isEmpty ? null : s.selectedModel;
     _requestTimeoutSeconds = s.requestTimeoutSeconds;
     _globalBgColor = s.backgroundColor;
@@ -92,6 +94,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         autoSyncIntervalMinutes: s.autoSyncIntervalMinutes,
         injectDateTime: s.injectDateTime,
         preserveThinking: s.preserveThinking,
+        contextWindowTokens: _contextWindowTokens,
         debugLogging: s.debugLogging,
         debugLogPath: s.debugLogPath,
         useBackend: s.useBackend,
@@ -298,6 +301,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _MaxTokensField(
                 value: _maxTokens,
                 onChanged: (v) => setState(() => _maxTokens = v),
+              ),
+              const Divider(height: 1),
+              _ContextWindowField(
+                value: _contextWindowTokens,
+                onChanged: (v) => setState(() => _contextWindowTokens = v),
               ),
               const Divider(height: 1),
               _TimeoutField(
@@ -1130,6 +1138,106 @@ class _MaxTokensFieldState extends State<_MaxTokensField> {
                   style: theme.textTheme.labelSmall
                       ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Context window size: log-scale slider + text field ───────────────────────
+
+class _ContextWindowField extends StatefulWidget {
+  final int value;
+  final ValueChanged<int> onChanged;
+  const _ContextWindowField({required this.value, required this.onChanged});
+
+  @override
+  State<_ContextWindowField> createState() => _ContextWindowFieldState();
+}
+
+class _ContextWindowFieldState extends State<_ContextWindowField> {
+  static const int _min = 1024;
+  static const int _max = 262144;
+
+  late final TextEditingController _textController;
+
+  static double _toSlider(int v) =>
+      (v.clamp(_min, _max) - _min) / (_max - _min);
+  static int _fromSlider(double s) =>
+      (_min + (s * (_max - _min))).round().clamp(_min, _max);
+
+  @override
+  void initState() {
+    super.initState();
+    _textController = TextEditingController(text: widget.value.toString());
+  }
+
+  @override
+  void didUpdateWidget(_ContextWindowField old) {
+    super.didUpdateWidget(old);
+    if (old.value != widget.value) {
+      final cursor = _textController.selection;
+      _textController.text = widget.value.toString();
+      _textController.selection = cursor;
+    }
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  void _applyText(String raw) {
+    final parsed = int.tryParse(raw.trim());
+    if (parsed == null) return;
+    widget.onChanged(parsed.clamp(_min, _max));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text('Context Window', style: theme.textTheme.bodyMedium)),
+              SizedBox(
+                width: 90,
+                child: TextField(
+                  controller: _textController,
+                  keyboardType: TextInputType.number,
+                  textAlign: TextAlign.right,
+                  style: theme.textTheme.bodyMedium,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6)),
+                  ),
+                  onSubmitted: _applyText,
+                  onEditingComplete: () => _applyText(_textController.text),
+                ),
+              ),
+            ],
+          ),
+          Slider(
+            value: _toSlider(widget.value),
+            onChanged: (s) {
+              final v = _fromSlider(s);
+              widget.onChanged(v);
+            },
+          ),
+          Text(
+            'Model\'s total context window in tokens. Used for the context usage indicator.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
       ),

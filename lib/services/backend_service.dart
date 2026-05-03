@@ -36,8 +36,14 @@ class BEToken extends BackendEvent {
 class BEMessageComplete extends BackendEvent {
   final String conversationId;
   final Map<String, dynamic> message;
-  const BEMessageComplete(
-      {required this.conversationId, required this.message});
+  final int? promptTokens;
+  final int? completionTokens;
+  const BEMessageComplete({
+    required this.conversationId,
+    required this.message,
+    this.promptTokens,
+    this.completionTokens,
+  });
 }
 
 class BEError extends BackendEvent {
@@ -249,9 +255,12 @@ class BackendService {
             content: msg['content'] as String,
           ));
         case 'message_complete':
+          final usage = msg['usage'] as Map<String, dynamic>?;
           _events.add(BEMessageComplete(
             conversationId: msg['conversation_id'] as String,
             message: msg['message'] as Map<String, dynamic>,
+            promptTokens: usage?['prompt_tokens'] as int?,
+            completionTokens: usage?['completion_tokens'] as int?,
           ));
         case 'error':
           _events.add(BEError(

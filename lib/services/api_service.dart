@@ -102,7 +102,13 @@ class ApiService {
   /// Handles thinking models (e.g. Qwen3): `reasoning_content` deltas are
   /// wrapped in `<think>…</think>` so the bubble widget renders them as a
   /// collapsible thinking block.
-  Stream<String> streamChat(List<Message> history) async* {
+  ///
+  /// [onUsage] is called once after the stream ends with prompt and completion
+  /// token counts (when the backend includes usage data).
+  Stream<String> streamChat(
+    List<Message> history, {
+    void Function(int prompt, int completion)? onUsage,
+  }) async* {
     final endpoint = '$_baseUrl/chat/completions';
     final resp = await _openStream(jsonEncode({
       'model': settings.selectedModel,
@@ -114,6 +120,8 @@ class ApiService {
 
     bool inThinking = false;
     bool thinkingClosed = false;
+    int? promptTokensOut;
+    int? completionTokensOut;
     final rawBuf = DebugLogger.instance.enabled ? StringBuffer() : null;
 
     try {
@@ -124,6 +132,14 @@ class ApiService {
         if (data == '[DONE]') break;
         try {
           final json = jsonDecode(data) as Map<String, dynamic>;
+
+          // Capture usage when present (may appear in a chunk with empty choices).
+          final usage = json['usage'] as Map<String, dynamic>?;
+          if (usage != null) {
+            promptTokensOut = usage['prompt_tokens'] as int?;
+            completionTokensOut = usage['completion_tokens'] as int?;
+          }
+
           final choices = json['choices'] as List<dynamic>;
           if (choices.isEmpty) continue;
           final delta = choices[0]['delta'] as Map<String, dynamic>?;
@@ -151,6 +167,9 @@ class ApiService {
     } finally {
       if (rawBuf != null) {
         DebugLogger.instance.logResponse('LLM', endpoint, 200, rawBuf.toString());
+      }
+      if (promptTokensOut != null && completionTokensOut != null) {
+        onUsage?.call(promptTokensOut, completionTokensOut);
       }
     }
   }
@@ -228,9 +247,20 @@ class ApiService {
           }
         }
       } catch (_) {}
+      // Capture usage from the JSON fallback response.
+      int? fbPrompt;
+      int? fbCompletion;
+      try {
+        final json = jsonDecode(body) as Map<String, dynamic>;
+        final u = json['usage'] as Map<String, dynamic>?;
+        if (u != null) {
+          fbPrompt = u['prompt_tokens'] as int?;
+          fbCompletion = u['completion_tokens'] as int?;
+        }
+      } catch (_) {}
       onComplete(toolCalls != null
-          ? LlmResponse(toolCalls: toolCalls)
-          : LlmResponse(content: text));
+          ? LlmResponse(toolCalls: toolCalls, promptTokens: fbPrompt, completionTokens: fbCompletion)
+          : LlmResponse(content: text, promptTokens: fbPrompt, completionTokens: fbCompletion));
       return;
     }
 
@@ -240,6 +270,8 @@ class ApiService {
     String? finishReason;
     bool inThinking = false;
     bool thinkingClosed = false;
+    int? promptTokensOut;
+    int? completionTokensOut;
     final rawBuf = DebugLogger.instance.enabled ? StringBuffer() : null;
 
     try {
@@ -250,6 +282,14 @@ class ApiService {
         if (data == '[DONE]') break;
         try {
           final json = jsonDecode(data) as Map<String, dynamic>;
+
+          // Capture usage (may arrive in a chunk with empty choices).
+          final usage = json['usage'] as Map<String, dynamic>?;
+          if (usage != null) {
+            promptTokensOut = usage['prompt_tokens'] as int?;
+            completionTokensOut = usage['completion_tokens'] as int?;
+          }
+
           final choices = json['choices'] as List<dynamic>;
           if (choices.isEmpty) continue;
 
@@ -304,10 +344,17 @@ class ApiService {
         (finishReason == 'tool_calls' || contentBuf.isEmpty)) {
       final sorted = builders.entries.toList()
         ..sort((a, b) => a.key.compareTo(b.key));
-      onComplete(
-          LlmResponse(toolCalls: sorted.map((e) => e.value.build()).toList()));
+      onComplete(LlmResponse(
+        toolCalls: sorted.map((e) => e.value.build()).toList(),
+        promptTokens: promptTokensOut,
+        completionTokens: completionTokensOut,
+      ));
     } else {
-      onComplete(LlmResponse(content: contentBuf.toString()));
+      onComplete(LlmResponse(
+        content: contentBuf.toString(),
+        promptTokens: promptTokensOut,
+        completionTokens: completionTokensOut,
+      ));
     }
   }
 }

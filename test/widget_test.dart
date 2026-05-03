@@ -4,6 +4,6 @@ import 'package:local_llm_chat/main.dart';
 
 void main() {
   testWidgets('App builds without throwing', (WidgetTester tester) async {
-    await tester.pumpWidget(const LocalLLMChatApp());
+    await tester.pumpWidget(const LoomChatApp());
   });
 }
