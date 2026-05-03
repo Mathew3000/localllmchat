@@ -1296,6 +1296,20 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           _streamingBackendMsg?.isStreaming = false;
           _streamingBackendMsg = null;
 
+          // Add an assistant message with toolCalls so the "Performing X…"
+          // bubble is visible during live streaming (mirrors _runAgenticLoop).
+          Map<String, dynamic> parsedArgs;
+          try {
+            parsedArgs = jsonDecode(argsJson) as Map<String, dynamic>;
+          } catch (_) {
+            parsedArgs = {};
+          }
+          final conv = _conversationById(cid);
+          conv?.messages.add(Message(
+            role: Role.assistant,
+            toolCalls: [ToolCall(id: callId, name: toolName, arguments: parsedArgs)],
+          ));
+
           // Show a tool-execution placeholder in the owning conversation,
           // regardless of which chat the user is currently viewing.
           final toolMsg = Message(
@@ -1305,7 +1319,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
             toolName: toolName,
             isStreaming: true,
           );
-          _conversationById(cid)?.messages.add(toolMsg);
+          conv?.messages.add(toolMsg);
           notifyListeners();
 
           // Execute asynchronously and relay result back to backend.
