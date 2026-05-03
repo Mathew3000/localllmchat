@@ -61,6 +61,7 @@ def _build_messages(
     settings: dict,
     tools_enabled: bool | None = None,
     memory_context: str | None = None,
+    client_datetime: str | None = None,
 ) -> list[dict]:
     """Convert ORM message list to OpenAI chat/completions payload."""
     messages: list[dict] = []
@@ -68,7 +69,8 @@ def _build_messages(
 
     system_prompt: str = settings.get("systemPrompt", "")
     if settings.get("injectDateTime"):
-        system_prompt += f"\n\nCurrent date and time: {_dt_string()}"
+        dt_str = client_datetime if client_datetime else _dt_string()
+        system_prompt += f"\n\nCurrent date and time: {dt_str}"
     if memory_context:
         system_prompt += (
             "\n\n---\n**About the user (from memory):**\n"
@@ -144,6 +146,7 @@ async def run_generation(
     settings: dict,
     tools: list[dict] | None = None,
     memory_context: str | None = None,
+    client_datetime: str | None = None,
 ) -> None:
     """
     Background task: stream LLM response and persist the result.
@@ -242,6 +245,7 @@ async def run_generation(
                     settings,
                     tools_enabled=bool(tools),
                     memory_context=memory_context,
+                    client_datetime=client_datetime,
                 ),
                 "stream": True,
                 "temperature": temperature,

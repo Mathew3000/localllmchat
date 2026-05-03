@@ -92,6 +92,8 @@ async def websocket_endpoint(
                 tools: list[dict] = msg.get("tools", [])
                 # Optional user-memory context pre-fetched by the client.
                 memory_context: str | None = msg.get("memory_context") or None
+                # Client's local datetime string (avoids UTC bias on the server).
+                client_datetime: str | None = msg.get("client_datetime") or None
 
                 if not conv_id:
                     await websocket.send_json(
@@ -133,11 +135,13 @@ async def websocket_endpoint(
                     s: dict = settings_data,
                     t: list[dict] = tools,
                     mc: str | None = memory_context,
+                    cdt: str | None = client_datetime,
                 ) -> None:
                     task_db = AsyncSessionLocal()
                     try:
                         await run_generation(
-                            task_db, uid, cid, s, tools=t, memory_context=mc
+                            task_db, uid, cid, s, tools=t, memory_context=mc,
+                            client_datetime=cdt,
                         )
                     finally:
                         await task_db.close()

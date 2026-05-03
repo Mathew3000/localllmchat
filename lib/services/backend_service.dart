@@ -304,6 +304,7 @@ class BackendService {
     String? messageId,
     List<Map<String, dynamic>> tools = const [],
     String? memoryContext,
+    String? clientDatetime,
   }) async {
     await ensureConnected();
     _send({
@@ -315,6 +316,7 @@ class BackendService {
       if (tools.isNotEmpty) 'tools': tools,
       if (memoryContext != null && memoryContext.isNotEmpty)
         'memory_context': memoryContext,
+      if (clientDatetime != null) 'client_datetime': clientDatetime,
     });
   }
 

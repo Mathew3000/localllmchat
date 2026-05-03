@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:intl/intl.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
@@ -1211,6 +1212,11 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
             ? mcpTools.map((t) => t.toOpenAiTool()).toList()
             : const [],
         memoryContext: memoryCtx,
+        // Send the client's local datetime so the backend uses the user's
+        // timezone rather than the server's (which is often UTC in Docker).
+        clientDatetime: settings.injectDateTime
+            ? DateFormat('EEEE, d MMMM yyyy, HH:mm').format(DateTime.now())
+            : null,
       );
     } catch (e) {
       assistantMsg.isStreaming = false;
