@@ -37,7 +37,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(originX, originY);
   Win32Window::Size size(winW, winH);
-  if (!window.Create(L"LocalLLMChat", origin, size)) {
+  if (!window.Create(L"LoomChat", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

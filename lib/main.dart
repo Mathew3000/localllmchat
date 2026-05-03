@@ -8,18 +8,18 @@ void main() {
   runApp(
     ChangeNotifierProvider(
       create: (_) => AppProvider(),
-      child: const LocalLLMChatApp(),
+      child: const LoomChatApp(),
     ),
   );
 }
 
-class LocalLLMChatApp extends StatelessWidget {
-  const LocalLLMChatApp({super.key});
+class LoomChatApp extends StatelessWidget {
+  const LoomChatApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'LocalLLMChat',
+      title: 'LoomChat',
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(Brightness.light),
       darkTheme: _buildTheme(Brightness.dark),

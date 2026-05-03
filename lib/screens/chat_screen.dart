@@ -119,7 +119,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: Column(
                     children: [
                       _DesktopChatHeader(
-                        title: p.activeConversation?.title ?? 'LocalLLMChat',
+                        title: p.activeConversation?.title ?? 'LoomChat',
                         actions: actions,
                         bgColor: bgColor,
                       ),
@@ -144,7 +144,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onPressed: () => _scaffoldKey.currentState?.openDrawer(),
             ),
             title: Text(
-              p.activeConversation?.title ?? 'LocalLLMChat',
+              p.activeConversation?.title ?? 'LoomChat',
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context)
                   .textTheme
@@ -321,7 +321,7 @@ class _SidebarHeader extends StatelessWidget {
                   color: cs.onPrimary, size: 28),
               const SizedBox(width: 10),
               Text(
-                'LocalLLMChat',
+                'LoomChat',
                 style: theme.textTheme.titleMedium
                     ?.copyWith(color: cs.onPrimary),
               ),
@@ -614,7 +614,7 @@ class _DrawerHeader extends StatelessWidget {
                         color: cs.onPrimary, size: 32),
                     const SizedBox(width: 12),
                     Text(
-                      'LocalLLMChat',
+                      'LoomChat',
                       style: theme.textTheme.titleLarge
                           ?.copyWith(color: cs.onPrimary),
                     ),

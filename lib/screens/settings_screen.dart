@@ -413,7 +413,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 48),
           Center(
             child: Text(
-              'LocalLLMChat $kAppVersion',
+              'LoomChat $kAppVersion',
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: Theme.of(context)
                         .colorScheme
@@ -1721,7 +1721,7 @@ class _BackupCard extends StatelessWidget {
         '${now.year}${_p(now.month)}${_p(now.day)}_${_p(now.hour)}${_p(now.minute)}${_p(now.second)}';
     try {
       final path = await FilePicker.platform.saveFile(
-        dialogTitle: 'Save LocalLLMChat backup',
+        dialogTitle: 'Save LoomChat backup',
         fileName: 'localllmchat_$stamp.json',
         bytes: Uint8List.fromList(utf8.encode(outputJson)),
       );
@@ -1826,7 +1826,7 @@ class _BackupCard extends StatelessWidget {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Not a valid LocalLLMChat backup file'),
+          content: Text('Not a valid LoomChat backup file'),
           behavior: SnackBarBehavior.floating,
         ),
       );

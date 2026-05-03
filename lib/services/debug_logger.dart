@@ -41,7 +41,7 @@ class DebugLogger {
       _currentFile = [_folderPath, 'localllmchat_$stamp.log']
           .join(Platform.pathSeparator);
       _sink = File(_currentFile!).openWrite();
-      _w('LocalLLMChat Debug Log\n');
+      _w('LoomChat Debug Log\n');
       _w('Session started: ${now.toIso8601String()}\n');
       _w('${'═' * 80}\n\n');
       await _sink!.flush();
