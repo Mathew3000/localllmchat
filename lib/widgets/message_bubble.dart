@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:typed_data';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -64,6 +66,80 @@ String _strippedContent(String raw) {
       .replaceAll(RegExp(r'<think>[\s\S]*?</think>'), '')
       .replaceAll(RegExp(r'<think>[\s\S]*'), '')
       .trim();
+}
+
+// ── Markdown part model (text vs fenced code block) ──────────────────────────
+
+sealed class _MdPart {
+  const _MdPart();
+}
+
+class _MdText extends _MdPart {
+  final String text;
+  const _MdText(this.text);
+}
+
+class _MdCode extends _MdPart {
+  final String language;
+  final String code;
+  const _MdCode(this.language, this.code);
+}
+
+/// Splits [src] into alternating plain-markdown and fenced code-block parts.
+/// Incomplete fences (during streaming) fall through as plain text.
+List<_MdPart> _splitMarkdownParts(String src) {
+  final parts = <_MdPart>[];
+  // Match ```lang\n...``` — non-greedy so multiple blocks are captured individually.
+  final re = RegExp(r'```(\w*)\n([\s\S]*?)```');
+  int last = 0;
+  for (final m in re.allMatches(src)) {
+    if (m.start > last) {
+      final text = src.substring(last, m.start);
+      if (text.trim().isNotEmpty) parts.add(_MdText(text));
+    }
+    parts.add(_MdCode(m.group(1) ?? '', m.group(2) ?? ''));
+    last = m.end;
+  }
+  if (last < src.length) {
+    final tail = src.substring(last);
+    if (tail.trim().isNotEmpty) parts.add(_MdText(tail));
+  }
+  return parts;
+}
+
+// ── Language → file extension map ────────────────────────────────────────────
+
+String _langToExtension(String lang) {
+  const map = <String, String>{
+    'python': '.py',    'py': '.py',
+    'javascript': '.js','js': '.js',
+    'typescript': '.ts','ts': '.ts',
+    'dart': '.dart',
+    'java': '.java',
+    'kotlin': '.kt',   'kt': '.kt',
+    'swift': '.swift',
+    'c': '.c',
+    'cpp': '.cpp',     'c++': '.cpp',
+    'csharp': '.cs',   'cs': '.cs',
+    'go': '.go',
+    'rust': '.rs',
+    'ruby': '.rb',
+    'php': '.php',
+    'html': '.html',
+    'css': '.css',
+    'scss': '.scss',
+    'json': '.json',
+    'yaml': '.yaml',   'yml': '.yaml',
+    'toml': '.toml',
+    'xml': '.xml',
+    'sql': '.sql',
+    'sh': '.sh',       'bash': '.sh',  'shell': '.sh',
+    'powershell': '.ps1', 'ps1': '.ps1',
+    'r': '.r',
+    'markdown': '.md', 'md': '.md',
+    'dockerfile': '',
+  };
+  return map[lang.toLowerCase()] ?? '.txt';
 }
 
 // ── Public bubble widget ─────────────────────────────────────────────────────
@@ -450,13 +526,9 @@ class _MarkdownContent extends StatelessWidget {
         (m) => '==${m[1]}==',
       );
 
-  @override
-  Widget build(BuildContext context) {
-    final highlightBg = highlightColor ?? const Color(0xFFFFD000);
-    final highlightFg = onColor(highlightBg);
-
+  MarkdownBody _markdownBody(String data, Color highlightBg, Color highlightFg) {
     return MarkdownBody(
-      data: _preprocess(text),
+      data: data,
       selectable: true,
       inlineSyntaxes: [_MarkSyntax()],
       builders: {
@@ -500,6 +572,201 @@ class _MarkdownContent extends StatelessWidget {
         ),
         blockquotePadding:
             const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final highlightBg = highlightColor ?? const Color(0xFFFFD000);
+    final highlightFg = onColor(highlightBg);
+
+    final parts = _splitMarkdownParts(text);
+
+    // Fast path: no fenced code blocks — render as a single MarkdownBody.
+    if (parts.every((p) => p is _MdText)) {
+      return _markdownBody(_preprocess(text), highlightBg, highlightFg);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: parts.map((part) {
+        if (part is _MdText && part.text.isNotEmpty) {
+          return _markdownBody(_preprocess(part.text), highlightBg, highlightFg);
+        }
+        if (part is _MdCode) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: _CodeBlockWidget(
+              language: part.language,
+              code: part.code,
+            ),
+          );
+        }
+        return const SizedBox.shrink();
+      }).toList(),
+    );
+  }
+}
+
+// ── Fenced code block widget (copy + download) ───────────────────────────────
+
+class _CodeBlockWidget extends StatefulWidget {
+  final String language;
+  final String code;
+  const _CodeBlockWidget({required this.language, required this.code});
+
+  @override
+  State<_CodeBlockWidget> createState() => _CodeBlockWidgetState();
+}
+
+class _CodeBlockWidgetState extends State<_CodeBlockWidget> {
+  bool _copied = false;
+
+  String get _displayLang =>
+      widget.language.isNotEmpty ? widget.language : 'code';
+
+  Future<void> _copy() async {
+    await Clipboard.setData(ClipboardData(text: widget.code));
+    setState(() => _copied = true);
+    await Future.delayed(const Duration(seconds: 2));
+    if (mounted) setState(() => _copied = false);
+  }
+
+  Future<void> _download(BuildContext context) async {
+    try {
+      final ext = _langToExtension(widget.language);
+      final filename = 'snippet$ext';
+      final bytes = Uint8List.fromList(utf8.encode(widget.code));
+
+      // Opens the platform's native save dialog (SAF on Android, shell on Windows).
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save code snippet',
+        fileName: filename,
+        bytes: bytes,
+      );
+
+      if (path != null && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Saved to $path'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Save failed: $e'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ── Header: language label + copy + download ──────────────────────
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 5, 4, 5),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerHighest,
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(8)),
+              border: Border(
+                bottom: BorderSide(
+                    color: cs.outlineVariant.withValues(alpha: 0.4)),
+              ),
+            ),
+            child: Row(
+              children: [
+                Text(
+                  _displayLang,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: cs.onSurfaceVariant,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+                const Spacer(),
+                _IconBtn(
+                  icon: _copied ? Icons.check_rounded : Icons.copy_rounded,
+                  color: _copied ? cs.primary : cs.onSurfaceVariant,
+                  tooltip: 'Copy',
+                  onTap: _copy,
+                ),
+                _IconBtn(
+                  icon: Icons.download_rounded,
+                  color: cs.onSurfaceVariant,
+                  tooltip: 'Download',
+                  onTap: () => _download(context),
+                ),
+              ],
+            ),
+          ),
+
+          // ── Code body ────────────────────────────────────────────────────
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.all(12),
+            child: SelectableText(
+              widget.code.trimRight(),
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                color: cs.onSurface,
+                height: 1.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Small icon button used in the code block header ──────────────────────────
+
+class _IconBtn extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String tooltip;
+  final VoidCallback onTap;
+  const _IconBtn({
+    required this.icon,
+    required this.color,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            child: Icon(icon, key: ValueKey(icon), size: 14, color: color),
+          ),
+        ),
       ),
     );
   }
