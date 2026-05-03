@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.local" "\0"
-            VALUE "FileDescription", "local_llm_chat" "\0"
+            VALUE "FileDescription", "LoomChat" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "local_llm_chat" "\0"
+            VALUE "InternalName", "LoomChat" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.local. All rights reserved." "\0"
             VALUE "OriginalFilename", "local_llm_chat.exe" "\0"
-            VALUE "ProductName", "local_llm_chat" "\0"
+            VALUE "ProductName", "LoomChat" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

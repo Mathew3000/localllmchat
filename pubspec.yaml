@@ -1,5 +1,5 @@
 name: local_llm_chat
-description: A Flutter app to chat with locally hosted LLMs via OpenAI-compatible API.
+description: LoomChat — a Flutter app to chat with locally hosted LLMs via OpenAI-compatible API.
 publish_to: 'none'
 version: 1.1.0+2
 
@@ -27,6 +27,15 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.14.0
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "icon.png"
+  min_sdk_android: 21
+  adaptive_icon_foreground: "icon.png"
+  adaptive_icon_background: "#ffffff"
 
 flutter:
   uses-material-design: true

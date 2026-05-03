@@ -25,7 +25,7 @@
     </queries>
 
     <application
-        android:label="LocalLLMChat"
+        android:label="LoomChat"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">
