@@ -1,7 +1,14 @@
-# LocalLLMChat
+# LoomChat
 
-A Flutter chat app for privately talking to locally-hosted LLMs through any OpenAI-compatible API (llama.cpp, Ollama, LM Studio, vLLM, …).  
-Primary target is Android; the adaptive layout also runs on Windows and Linux.
+<p align="center">
+  <img src="icon.png" alt="LoomChat icon" width="120"/>
+</p>
+
+<p align="center">
+  A Flutter chat app for privately talking to locally-hosted LLMs through any OpenAI-compatible API.<br/>
+  Works with llama.cpp, Ollama, LM Studio, vLLM, and more.<br/>
+  Primary target is Android; the adaptive layout also runs on Windows and Linux.
+</p>
 
 ---
 
@@ -9,15 +16,19 @@ Primary target is Android; the adaptive layout also runs on Windows and Linux.
 
 | Category | What it does |
 |---|---|
-| **Chat** | Streaming responses, Markdown rendering, selectable text, collapsible thinking blocks (Qwen3 / reasoning models) |
+| **Chat** | Streaming responses, Markdown rendering in both user and assistant bubbles, selectable text, collapsible thinking blocks (Qwen3 / reasoning models) |
+| **Auto-title** | Conversations are automatically named by the LLM after the first exchange |
 | **Multi-conversation** | Permanent sidebar on wide screens, drawer on mobile; named conversations with long-press context menu |
+| **Context usage** | Progress bar in the chat header showing prompt token usage vs. configured context window size |
+| **Code blocks** | Per-block copy and download buttons with native save dialog (Android SAF + Windows) |
 | **MCP tools** | Multiple MCP servers (Streamable-HTTP and HTTP+SSE transports, auto-detected); per-server Home/Away URLs; agentic tool loop with live tool-call and result cards |
+| **Backend mode** | Optional self-hosted Python/FastAPI backend with WebSocket streaming; persists conversations server-side and supports multi-device access |
 | **Dual URL** | Home URL (local Wi-Fi) + Away URL (WireGuard / Tailscale); auto-detects which is reachable |
 | **Secret chats** | Password-protected conversations hidden until unlocked; SHA-256 hashed PIN |
 | **Sync** | Self-hosted sync server; E2E encrypted (AES-256-GCM, PBKDF2-SHA256); union-merge across devices |
 | **Backup & Restore** | Export all chats + settings to a JSON file; AES-256-GCM encrypted (PBKDF2-SHA256) when a secret-chat password is set |
 | **Appearance** | Per-chat and global background colour, user bubble colour, AI bubble colour |
-| **Generation** | Configurable temperature, max tokens (128 – 262 144), request timeout, system prompt |
+| **Generation** | Configurable temperature, max tokens (128 – 262 144), context window size, request timeout, system prompt, optional date/time injection (client local time) |
 
 ---
 
@@ -36,6 +47,7 @@ lib/
 │   └── app_provider.dart      – ChangeNotifier; streaming, agentic loop, sync, backup
 ├── services/
 │   ├── api_service.dart       – OpenAI-compatible HTTP client (SSE streaming + tools)
+│   ├── backend_service.dart   – WebSocket client for the self-hosted backend
 │   ├── backup_crypto.dart     – AES-256-GCM backup encryption (PBKDF2-SHA256)
 │   ├── base_mcp_service.dart  – Abstract MCP service interface
 │   ├── mcp_service.dart       – MCP Streamable-HTTP transport
@@ -50,8 +62,25 @@ lib/
 └── widgets/
     ├── chat_input.dart        – Text field; Enter sends on desktop, Shift+Enter newline
     ├── color_picker.dart      – Colour palette dialog
-    ├── message_bubble.dart    – User / assistant bubble with thinking-block support
+    ├── message_bubble.dart    – User / assistant bubble; Markdown + code block download
     └── tool_bubble.dart       – Collapsible tool-call and tool-result cards
+
+backend/                       – Self-hosted generation backend (Python / FastAPI)
+├── main.py                    – FastAPI app, router registration
+├── models.py                  – SQLAlchemy ORM models (User, Conversation, Message, …)
+├── schemas.py                 – Pydantic request / response schemas
+├── auth.py                    – JWT helpers
+├── database.py                – Async SQLAlchemy session factory
+├── dependencies.py            – FastAPI dependency injectors
+├── routers/
+│   ├── auth.py                – POST /api/auth/{register,login}
+│   ├── conversations.py       – CRUD + auto-title endpoint
+│   ├── models_router.py       – GET /api/models (proxies LLM server)
+│   ├── settings.py            – GET/PUT /api/settings
+│   └── ws.py                  – WebSocket /ws (streaming, tool relay)
+└── services/
+    ├── llm.py                 – Core generation loop (streaming, tool-call relay)
+    └── ws_hub.py              – Per-user WebSocket hub
 
 sync_server/                   – Self-hosted sync backend (Go + SQLite)
 ├── main.go                    – HTTP server, routing, JWT secret init
@@ -108,7 +137,7 @@ chmod +x build_linux.sh
 ```
 
 Output: `build/linux/x64/release/bundle/`  
-When a version argument is given, a `build/LocalLLMChat-v1.4.0-linux.tar.gz` archive is also created.
+When a version argument is given, a `build/LoomChat-v1.4.0-linux.tar.gz` archive is also created.
 
 ---
 
@@ -130,6 +159,25 @@ When a version argument is given, a `build/LocalLLMChat-v1.4.0-linux.tar.gz` arc
    — Auto tries Streamable-HTTP first and falls back to SSE automatically
 4. Tap the tool count chip to see available tool names
 5. The app runs an agentic loop automatically when MCP tools are loaded
+
+---
+
+## Backend mode (optional)
+
+LoomChat includes a self-hosted Python backend that moves LLM generation server-side, persists conversations in a database, and lets multiple devices share the same chat history.
+
+### Running the backend
+
+```bash
+cd backend
+docker compose up --build -d
+```
+
+### Connecting the app
+
+1. Settings → enable **Backend Mode**
+2. Enter the backend URL and register / log in
+3. The app switches to WebSocket streaming and syncs conversations automatically
 
 ---
 
@@ -217,7 +265,7 @@ Settings → **Backup & Restore**
 | `shared_preferences` | Local persistence |
 | `crypto` | SHA-256 for secret-chat password hashing |
 | `cryptography` | AES-256-GCM + PBKDF2-SHA256 for backup and sync encryption |
-| `file_picker` | SAF-based file save / load (backup export & import) |
+| `file_picker` | SAF-based file save / load (backup export, code block download) |
 | `flutter_markdown` | Markdown rendering in chat bubbles |
 | `uuid` | Conversation / server IDs |
 | `intl` | Date formatting |
