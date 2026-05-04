@@ -197,8 +197,8 @@ async def generate_title(
         headers["Authorization"] = f"Bearer {api_key}"
 
     prompt = (
-        "Generate a conversation title for a conversation that starts with "
-        f"`{req.first_message}`. Reply with only the title, no quotes."
+        "Generate a short conversation title (max 6 words) for a chat that "
+        f"starts with: {req.first_message}"
     )
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
@@ -207,9 +207,23 @@ async def generate_title(
             headers=headers,
             json={
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [
+                    # Strong system instruction to suppress thinking/reasoning.
+                    {
+                        "role": "system",
+                        "content": (
+                            "You output only a single short title, nothing else. "
+                            "No thinking, no reasoning steps, no explanation, no quotes."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
                 "stream": False,
                 "max_tokens": 20,
+                # Disable thinking mode for models that support this flag
+                # (e.g. Qwen3 on vLLM). Ignored by other backends.
+                "enable_thinking": False,
+                "chat_template_kwargs": {"enable_thinking": False},
             },
         )
 
