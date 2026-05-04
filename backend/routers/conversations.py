@@ -182,14 +182,14 @@ async def generate_title(
     us = await db.get(UserSettings, user.id)
     settings: dict = dict(us.data) if us else {}
 
+    # Mirror llm.py's resolution order so the same LLM is always used.
     base_url = (
-        settings.get("baseUrlHome") or settings.get("baseUrl") or ""
+        settings.get("baseUrlHome")
+        or settings.get("baseUrl")
+        or "http://localhost:11434/v1"
     ).rstrip("/")
     model = settings.get("selectedModel") or ""
     api_key = settings.get("apiKey") or ""
-
-    if not base_url or not model:
-        raise HTTPException(status_code=400, detail="LLM not configured")
 
     headers = {"Content-Type": "application/json"}
     if api_key:
