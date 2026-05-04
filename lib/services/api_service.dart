@@ -58,6 +58,44 @@ class ApiService {
     return messages;
   }
 
+  /// Asks the LLM for a short conversation title based on [firstMessage].
+  /// Uses a non-streaming request with a tiny token budget. Strips surrounding
+  /// quotes/backticks and truncates to 60 characters.
+  Future<String> fetchTitle(String firstMessage) async {
+    final uri = Uri.parse('$_baseUrl/chat/completions');
+    final body = jsonEncode({
+      'model': settings.selectedModel,
+      'messages': [
+        {
+          'role': 'user',
+          'content':
+              'Generate a conversation title for a conversation that starts with '
+              '`$firstMessage`. Reply with only the title, no quotes.',
+        }
+      ],
+      'stream': false,
+      'max_tokens': 20,
+    });
+    DebugLogger.instance.logRequest('LLM', 'POST', uri.toString(), body);
+    final response = await http
+        .post(uri, headers: _headers, body: body)
+        .timeout(const Duration(seconds: 15));
+    DebugLogger.instance.logResponse(
+        'LLM', uri.toString(), response.statusCode, response.body);
+    if (response.statusCode != 200) {
+      throw Exception('fetchTitle failed: ${response.statusCode}');
+    }
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final choices = data['choices'] as List<dynamic>;
+    if (choices.isEmpty) throw Exception('fetchTitle: empty choices');
+    final msg = (choices[0] as Map<String, dynamic>)['message']
+        as Map<String, dynamic>;
+    var title = (msg['content'] as String? ?? '').trim();
+    title = title.replaceAll(RegExp(r'''^["'`]+|["'`]+$'''), '');
+    if (title.length > 60) title = '${title.substring(0, 60).trimRight()}…';
+    return title;
+  }
+
   Future<List<String>> fetchModels() async {
     final uri = Uri.parse('$_baseUrl/models');
     DebugLogger.instance.logRequest('LLM', 'GET', uri.toString(), '');

@@ -1042,6 +1042,38 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// In backend mode: load canonical messages first so [_conversationById]
+  /// returns the fresh object, then run auto-title on it.
+  Future<void> _loadThenAutoTitle(String convId) async {
+    await _loadConversationMessages(convId);
+    final conv = _conversationById(convId);
+    if (conv != null) unawaited(_maybeAutoTitle(conv));
+  }
+
+  /// After the first exchange, asks the LLM for a proper title and replaces
+  /// the auto-truncated one. Silently swallows all errors.
+  Future<void> _maybeAutoTitle(Conversation conv) async {
+    final userMessages =
+        conv.messages.where((m) => m.role == Role.user).toList();
+    if (userMessages.length != 1) return; // not the first exchange
+    final firstMessage = userMessages.first.content;
+    if (firstMessage.isEmpty) return; // image-only message — skip
+
+    try {
+      final String title;
+      if (_settings.useBackend && _backend != null) {
+        title = await _backend!.generateTitle(conv.id, firstMessage);
+      } else {
+        title = await ApiService(_settings, activeBaseUrl).fetchTitle(firstMessage);
+      }
+      conv.title = title;
+      if (!_settings.useBackend) _persistConversations();
+      notifyListeners();
+    } catch (_) {
+      // Keep the auto-truncated title on any failure
+    }
+  }
+
   void renameConversation(String id, String newTitle) {
     final title = newTitle.trim();
     if (title.isEmpty) return;
@@ -1260,12 +1292,11 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           _isStreaming = false;
           StreamingKeepAlive.stop();
           notifyListeners();
-          // Reload from backend to get canonical message state (tool messages,
-          // correct IDs, etc.) after a completed generation.
-          if (completedConvId != null && _backend != null) {
-            _loadConversationMessages(completedConvId);
-          }
           _processNextInQueue();
+          // Reload canonical messages then (if first exchange) auto-title.
+          if (completedConvId != null && _backend != null) {
+            unawaited(_loadThenAutoTitle(completedConvId));
+          }
         }
 
       case BEError(conversationId: final cid, detail: final detail):
@@ -1414,22 +1445,23 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   // ── Streaming (no tools) ──────────────────────────────────────────────────
 
   Future<void> _runStreamingChat({String? memoryCtx}) async {
+    final conv = _activeConversation!; // capture for auto-title
     final assistantMsg = Message(
       role: Role.assistant,
       content: '',
       isStreaming: true,
     );
-    _activeConversation!.messages.add(assistantMsg);
-    _activeConversation!.updatedAt = DateTime.now();
+    conv.messages.add(assistantMsg);
+    conv.updatedAt = DateTime.now();
     notifyListeners();
 
     try {
       final api = ApiService(_settingsWithMemory(memoryCtx), activeBaseUrl);
-      final history = _activeConversation!.messages
+      final history = conv.messages
           .where((m) => m.id != assistantMsg.id)
           .toList();
 
-      final convId = _activeConversation!.id;
+      final convId = conv.id;
       _streamSub = api.streamChat(
         history,
         onUsage: (prompt, completion) {
@@ -1448,6 +1480,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           _persistConversations();
           notifyListeners();
           _processNextInQueue();
+          unawaited(_maybeAutoTitle(conv));
         },
         onError: (Object e) {
           assistantMsg.isStreaming = false;
@@ -1477,6 +1510,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   // ── Agentic loop (with MCP tools, fully streaming) ───────────────────────
 
   Future<void> _runAgenticLoop({String? memoryCtx}) async {
+    final conv = _activeConversation!; // capture for auto-title
     final api = ApiService(_settingsWithMemory(memoryCtx), activeBaseUrl);
     const maxIterations = 10;
 
@@ -1592,6 +1626,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       _persistConversations();
       notifyListeners();
       _processNextInQueue();
+      unawaited(_maybeAutoTitle(conv));
     }
   }
 

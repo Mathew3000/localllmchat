@@ -1,12 +1,14 @@
 import uuid
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependencies import get_current_user, get_db
-from models import Conversation, Message, User
+from models import Conversation, Message, User, UserSettings
 from schemas import (
     ConversationDetail,
     ConversationSummary,
@@ -158,3 +160,70 @@ async def delete_message(
 
     await db.delete(msg)
     await db.commit()
+
+
+# ── Auto-title ────────────────────────────────────────────────────────────────
+
+class GenerateTitleRequest(BaseModel):
+    first_message: str
+
+
+@router.post("/{conv_id}/generate-title")
+async def generate_title(
+    conv_id: str,
+    req: GenerateTitleRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Ask the LLM for a short title, persist it, and return it."""
+    conv = await db.get(Conversation, conv_id)
+    _own_or_404(conv, user)
+
+    us = await db.get(UserSettings, user.id)
+    settings: dict = dict(us.data) if us else {}
+
+    base_url = (settings.get("baseUrl") or "").rstrip("/")
+    model = settings.get("selectedModel") or ""
+    api_key = settings.get("apiKey") or ""
+
+    if not base_url or not model:
+        raise HTTPException(status_code=400, detail="LLM not configured")
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    prompt = (
+        "Generate a conversation title for a conversation that starts with "
+        f"`{req.first_message}`. Reply with only the title, no quotes."
+    )
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+        resp = await client.post(
+            f"{base_url}/chat/completions",
+            headers=headers,
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "max_tokens": 20,
+            },
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"LLM error: {resp.status_code}")
+
+    try:
+        raw: str = resp.json()["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, ValueError):
+        raise HTTPException(status_code=502, detail="Unexpected LLM response")
+
+    title = raw.strip().strip("\"'`")
+    if len(title) > 60:
+        title = title[:60].rstrip() + "…"
+
+    conv.title = title
+    conv.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return {"title": title}

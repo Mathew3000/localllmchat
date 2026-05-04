@@ -510,6 +510,25 @@ class BackendService {
     }
   }
 
+  /// Asks the backend to generate a title for [convId] based on [firstMessage].
+  /// The backend calls the LLM, persists the result, and returns the title.
+  Future<String> generateTitle(String convId, String firstMessage) async {
+    final client = _httpClient();
+    try {
+      final resp = await client
+          .post(
+            Uri.parse('$_base/api/conversations/$convId/generate-title'),
+            headers: _headers,
+            body: jsonEncode({'first_message': firstMessage}),
+          )
+          .timeout(const Duration(seconds: 15));
+      _check(resp);
+      return (jsonDecode(resp.body) as Map<String, dynamic>)['title'] as String;
+    } finally {
+      client.close();
+    }
+  }
+
   // ── REST: Models ──────────────────────────────────────────────────────────
 
   Future<List<String>> fetchModels() async {
