@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -216,11 +217,20 @@ async def generate_title(
         raise HTTPException(status_code=502, detail=f"LLM error: {resp.status_code}")
 
     try:
-        raw: str = resp.json()["choices"][0]["message"]["content"] or ""
+        msg = resp.json()["choices"][0]["message"]
+        # Prefer content; fall back to reasoning_content for models that emit
+        # their final answer there (e.g. some Qwen3 configs).
+        raw: str = msg.get("content") or msg.get("reasoning_content") or ""
     except (KeyError, IndexError, ValueError):
         raise HTTPException(status_code=502, detail="Unexpected LLM response")
 
+    # Strip any <think>…</think> blocks the model may have emitted.
+    raw = re.sub(r"<think>[\s\S]*?</think>", "", raw)
+    raw = re.sub(r"<think>[\s\S]*", "", raw)  # unclosed block
+
     title = raw.strip().strip("\"'`")
+    if not title:
+        raise HTTPException(status_code=502, detail="LLM returned empty title")
     if len(title) > 60:
         title = title[:60].rstrip() + "…"
 
