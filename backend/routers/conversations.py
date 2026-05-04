@@ -182,7 +182,9 @@ async def generate_title(
     us = await db.get(UserSettings, user.id)
     settings: dict = dict(us.data) if us else {}
 
-    base_url = (settings.get("baseUrl") or "").rstrip("/")
+    base_url = (
+        settings.get("baseUrlHome") or settings.get("baseUrl") or ""
+    ).rstrip("/")
     model = settings.get("selectedModel") or ""
     api_key = settings.get("apiKey") or ""
 
