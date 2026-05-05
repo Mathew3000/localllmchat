@@ -192,7 +192,7 @@ async def run_generation(
         base_url = (
             settings.get("baseUrlHome")
             or settings.get("baseUrl")
-            or "http://localhost:11434/v1"
+            or "http://localhost:5000/v1"
         ).rstrip("/")
         model = settings.get("selectedModel", "")
         temperature = float(settings.get("temperature", 0.7))

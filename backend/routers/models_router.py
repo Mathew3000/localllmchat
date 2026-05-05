@@ -17,7 +17,9 @@ async def list_models(
     us = await db.get(UserSettings, user.id)
     s = us.data if us else {}
 
-    base_url = s.get("baseUrl", "http://localhost:11434/v1").rstrip("/")
+    base_url = (
+        s.get("baseUrlHome") or s.get("baseUrl") or "http://localhost:5000/v1"
+    ).rstrip("/")
     api_key = s.get("apiKey", "")
 
     headers: dict[str, str] = {}
