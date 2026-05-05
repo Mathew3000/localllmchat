@@ -27,6 +27,12 @@ class ChatInput extends StatefulWidget {
   final void Function(int index) onRemoveFromQueue;
   final VoidCallback onClearQueue;
 
+  /// When non-null, a circular context-usage ring is shown beside the send
+  /// button. [promptTokens] is the current usage; [contextWindowTokens] is
+  /// the configured maximum.
+  final int? promptTokens;
+  final int? contextWindowTokens;
+
   const ChatInput({
     super.key,
     required this.isStreaming,
@@ -35,6 +41,8 @@ class ChatInput extends StatefulWidget {
     this.messageQueue = const [],
     required this.onRemoveFromQueue,
     required this.onClearQueue,
+    this.promptTokens,
+    this.contextWindowTokens,
   });
 
   @override
@@ -248,6 +256,14 @@ class _ChatInputState extends State<ChatInput> {
                 ),
               ),
               const SizedBox(width: 8),
+              if (widget.promptTokens != null &&
+                  widget.contextWindowTokens != null) ...[
+                _ContextRing(
+                  promptTokens: widget.promptTokens!,
+                  contextWindowTokens: widget.contextWindowTokens!,
+                ),
+                const SizedBox(width: 6),
+              ],
               _ActionButton(
                 isStreaming: widget.isStreaming,
                 canSend: canSend,
@@ -463,6 +479,50 @@ class _QueueChip extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Context usage ring ────────────────────────────────────────────────────────
+
+class _ContextRing extends StatelessWidget {
+  final int promptTokens;
+  final int contextWindowTokens;
+
+  const _ContextRing({
+    required this.promptTokens,
+    required this.contextWindowTokens,
+  });
+
+  String _fmt(int n) =>
+      n >= 1000 ? '${(n / 1000).toStringAsFixed(1)}k' : '$n';
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final ratio = (promptTokens / contextWindowTokens).clamp(0.0, 1.0);
+    final color = ratio < 0.7
+        ? cs.primary
+        : ratio < 0.9
+            ? cs.tertiary
+            : cs.error;
+
+    return Tooltip(
+      message: '${_fmt(promptTokens)} / ${_fmt(contextWindowTokens)}',
+      triggerMode: TooltipTriggerMode.tap,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 2),
+        child: SizedBox(
+          width: 28,
+          height: 28,
+          child: CircularProgressIndicator(
+            value: ratio,
+            strokeWidth: 3,
+            backgroundColor: cs.surfaceContainerHighest,
+            color: color,
+          ),
+        ),
       ),
     );
   }

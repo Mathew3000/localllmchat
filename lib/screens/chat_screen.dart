@@ -122,8 +122,6 @@ class _ChatScreenState extends State<ChatScreen> {
                         title: p.activeConversation?.title ?? 'LoomChat',
                         actions: actions,
                         bgColor: bgColor,
-                        promptTokens: p.activePromptTokens,
-                        contextWindow: p.settings.contextWindowTokens,
                       ),
                       Expanded(child: chatPanel),
                     ],
@@ -147,8 +145,6 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             title: _AppBarTitle(
               title: p.activeConversation?.title ?? 'LoomChat',
-              promptTokens: p.activePromptTokens,
-              contextWindow: p.settings.contextWindowTokens,
             ),
             actions: actions,
             elevation: 0,
@@ -187,6 +183,8 @@ class _ChatScreenState extends State<ChatScreen> {
             messageQueue: p.messageQueue,
             onRemoveFromQueue: p.removeFromQueue,
             onClearQueue: p.clearQueue,
+            promptTokens: p.activePromptTokens,
+            contextWindowTokens: p.settings.contextWindowTokens,
           ),
         ),
       ],
@@ -250,42 +248,20 @@ class _DesktopSidebar extends StatelessWidget {
 
 // ── Shared token-count formatter ──────────────────────────────────────────────
 
-String _fmtTokens(int n) =>
-    n >= 1000 ? '${(n / 1000).toStringAsFixed(1)}k' : '$n';
-
-// ── Mobile app bar title with optional context bar ────────────────────────────
+// ── Mobile app bar title ──────────────────────────────────────────────────────
 
 class _AppBarTitle extends StatelessWidget {
   final String title;
-  final int? promptTokens;
-  final int contextWindow;
 
-  const _AppBarTitle({
-    required this.title,
-    required this.promptTokens,
-    required this.contextWindow,
-  });
+  const _AppBarTitle({required this.title});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final pt = promptTokens;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          title,
-          overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.titleMedium
-              ?.copyWith(fontWeight: FontWeight.w600),
-        ),
-        if (pt != null) ...[
-          const SizedBox(height: 2),
-          _ContextBar(promptTokens: pt, contextWindow: contextWindow, cs: cs),
-        ],
-      ],
+    return Text(
+      title,
+      overflow: TextOverflow.ellipsis,
+      style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
     );
   }
 }
@@ -296,22 +272,17 @@ class _DesktopChatHeader extends StatelessWidget {
   final String title;
   final List<Widget> actions;
   final Color? bgColor;
-  final int? promptTokens;
-  final int contextWindow;
 
   const _DesktopChatHeader({
     required this.title,
     required this.actions,
     this.bgColor,
-    this.promptTokens,
-    this.contextWindow = 32768,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final pt = promptTokens;
     return Material(
       color: bgColor ?? cs.surface,
       elevation: 0,
@@ -328,82 +299,17 @@ class _DesktopChatHeader extends StatelessWidget {
           children: [
             const SizedBox(width: 12),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    title,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w600),
-                  ),
-                  if (pt != null) ...[
-                    const SizedBox(height: 2),
-                    _ContextBar(
-                        promptTokens: pt,
-                        contextWindow: contextWindow,
-                        cs: cs),
-                  ],
-                ],
+              child: Text(
+                title,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w600),
               ),
             ),
             ...actions,
           ],
         ),
       ),
-    );
-  }
-}
-
-// ── Shared context usage bar ──────────────────────────────────────────────────
-
-class _ContextBar extends StatelessWidget {
-  final int promptTokens;
-  final int contextWindow;
-  final ColorScheme cs;
-
-  const _ContextBar({
-    required this.promptTokens,
-    required this.contextWindow,
-    required this.cs,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final ratio = (promptTokens / contextWindow).clamp(0.0, 1.0);
-    final pct = (ratio * 100).round();
-    final Color barColor = ratio < 0.7
-        ? cs.primary
-        : ratio < 0.9
-            ? cs.tertiary
-            : cs.error;
-
-    return Row(
-      children: [
-        SizedBox(
-          width: 80,
-          height: 4,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(2),
-            child: LinearProgressIndicator(
-              value: ratio,
-              backgroundColor: cs.outlineVariant.withValues(alpha: 0.3),
-              valueColor: AlwaysStoppedAnimation(barColor),
-              minHeight: 4,
-            ),
-          ),
-        ),
-        const SizedBox(width: 6),
-        Text(
-          '${_fmtTokens(promptTokens)} / ${_fmtTokens(contextWindow)} ($pct%)',
-          style: TextStyle(
-            fontSize: 10,
-            color: cs.onSurfaceVariant,
-            height: 1,
-          ),
-        ),
-      ],
     );
   }
 }
