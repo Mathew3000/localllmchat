@@ -144,6 +144,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get backendUsingAway => _backendUsingAway;
   bool get backendConfigured =>
       _settings.backendUrl.isNotEmpty && _settings.backendToken.isNotEmpty;
+  /// Expose the live [BackendService] for direct API calls (e.g. 2FA management).
+  BackendService? get backendService => _backend;
 
   // Sync getters
   /// True when sync credentials are stored (server URL + tokens configured).
@@ -355,7 +357,12 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     notifyListeners();
     _autoDetectUrl();
-    _fetchAllMcpTools();
+    // Only attempt client-side MCP fetching in direct (non-backend) mode.
+    // In backend mode the server handles MCP from its own network; the client
+    // can't reliably reach those servers when away from home anyway.
+    if (!(_settings.useBackend && _settings.backendToken.isNotEmpty)) {
+      _fetchAllMcpTools();
+    }
     _startAutoSync();
     if (_settings.useBackend && _settings.backendToken.isNotEmpty) {
       _connectBackend();
@@ -655,9 +662,12 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rebuildToolServiceMap();
     notifyListeners();
 
-    // Kick off fetches outside the synchronous path.
-    for (final s in toFetch) {
-      fetchMcpToolsForServer(s);
+    // Kick off fetches outside the synchronous path — only in direct mode.
+    // In backend mode the server handles MCP; the client skips fetching.
+    if (!(_settings.useBackend && _settings.backendToken.isNotEmpty)) {
+      for (final s in toFetch) {
+        fetchMcpToolsForServer(s);
+      }
     }
   }
 
@@ -883,9 +893,9 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_activeConversation != null) {
         _loadConversationMessages(_activeConversation!.id);
       }
-      // Re-fetch MCP tools now that settings may have been updated from the
-      // server — the initial _fetchAllMcpTools() runs before backend connects.
-      _fetchAllMcpTools();
+      // In backend mode the server handles MCP — skip client-side fetching.
+      // (The client can't reach MCP servers when away from home, and the
+      // backend reads its own copy of the mcpServers settings directly.)
     } catch (e) {
       _backendConnectError = e.toString();
       _backend?.dispose();
@@ -908,20 +918,46 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Reconnects to the backend using the stored token (no re-authentication).
   Future<void> backendReconnect() => _connectBackend();
 
-  /// Login to the backend server and connect.
-  Future<void> backendLogin(
+  /// Login to the backend server.
+  /// Returns a [LoginResult]. If [LoginResult.requires2fa] is true the caller
+  /// must prompt the user for a TOTP code and then call [backendComplete2fa].
+  Future<LoginResult> backendLogin(
     String url,
     String username,
     String password,
   ) async {
-    final token = await BackendService.loginStatic(
+    final result = await BackendService.loginStatic(
       url,
       username,
       password,
       allowSelfSigned: _settings.backendAllowSelfSigned,
     );
+    if (result.requires2fa) {
+      // Store URL so complete2fa can use it; do not connect yet.
+      _settings = _settings.copyWith(backendUrl: url);
+      await _storage.saveSettings(_settings);
+      return result;
+    }
     _settings = _settings.copyWith(
       backendUrl: url,
+      backendToken: result.token!,
+      useBackend: true,
+    );
+    await _storage.saveSettings(_settings);
+    await _connectBackend();
+    return result;
+  }
+
+  /// Finalize a 2FA login with the TOTP [code] and the [partialToken] from
+  /// the previous [backendLogin] call.
+  Future<void> backendComplete2fa(String partialToken, String code) async {
+    final token = await BackendService.complete2faStatic(
+      _settings.backendUrl,
+      partialToken,
+      code,
+      allowSelfSigned: _settings.backendAllowSelfSigned,
+    );
+    _settings = _settings.copyWith(
       backendToken: token,
       useBackend: true,
     );
@@ -964,6 +1000,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         _conversations.where((c) => !c.isSecret).toList();
     _activeConversation =
         logoutVisible.isNotEmpty ? logoutVisible.first : null;
+    // Switching back to direct mode — fetch MCP tools from the local network.
+    _fetchAllMcpTools();
     notifyListeners();
   }
 
@@ -1198,11 +1236,13 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     await StreamingKeepAlive.start();
 
-    // Pre-fetch user memory context (non-blocking — failures are silently
-    // swallowed and we proceed without memory rather than blocking the user).
-    final memoryCtx = await _fetchUserMemory();
+    // In backend mode the server handles MCP tool listing, tool execution, and
+    // memory pre-fetching itself (it is co-located with those services and never
+    // "away").  The client only needs to do this work in direct (non-backend) mode.
+    final bool usingBackend = _settings.useBackend && _backend != null;
+    final memoryCtx = usingBackend ? null : await _fetchUserMemory();
 
-    if (_settings.useBackend && _backend != null) {
+    if (usingBackend) {
       await _runBackendGeneration(memoryCtx: memoryCtx);
     } else {
       await _autoDetectUrl();
@@ -1238,12 +1278,13 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         userMsg.content,
         userMsg.images,
         messageId: userMsg.id,
-        // Forward tool definitions so the backend can include them in the LLM
-        // request and relay tool_call events back to this client for execution.
-        tools: mcpAvailable
-            ? mcpTools.map((t) => t.toOpenAiTool()).toList()
-            : const [],
-        memoryContext: memoryCtx,
+        // Do NOT send tools — the backend reads mcpServers from the stored
+        // user settings and handles tool listing + execution itself.
+        // This means MCP works even when the client is away from home.
+        //
+        // memoryContext is also omitted — the backend pre-fetches it from
+        // the memory MCP server (if configured) before the first LLM call.
+        //
         // Send the client's local datetime so the backend uses the user's
         // timezone rather than the server's (which is often UTC in Docker).
         clientDatetime: settings.injectDateTime

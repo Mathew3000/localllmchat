@@ -21,6 +21,27 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class LoginResponse(BaseModel):
+    access_token: str | None = None
+    token_type: str = "bearer"
+    requires_2fa: bool = False
+    partial_token: str | None = None
+
+
+class TotpSetupResponse(BaseModel):
+    secret: str
+    uri: str
+
+
+class TotpCompleteRequest(BaseModel):
+    partial_token: str
+    code: str
+
+
+class TotpVerifyRequest(BaseModel):
+    code: str
+
+
 # ── Messages ──────────────────────────────────────────────────────────────────
 
 class MessageOut(BaseModel):

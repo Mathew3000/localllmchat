@@ -1,12 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
+// dart:typed_data provided transitively via flutter/services;
 import 'package:file_picker/file_picker.dart';
 import '../services/backup_crypto.dart';
+import '../services/backend_service.dart';
 import '../services/debug_logger.dart';
 import '../services/sync_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import '../models/settings.dart';
 import '../providers/app_provider.dart';
 import '../version.dart';
@@ -2368,6 +2371,10 @@ class _BackendCardState extends State<_BackendCard> {
   bool _busy = false;
   String? _error;
 
+  // 2FA management state (only relevant when logged in)
+  bool? _totpEnabled; // null = not yet fetched
+  bool _totp2faFetching = false;
+
   @override
   void initState() {
     super.initState();
@@ -2389,6 +2396,225 @@ class _BackendCardState extends State<_BackendCard> {
     context.read<AppProvider>().setBackendAwayUrl(_awayUrlCtrl.text.trim());
   }
 
+  Future<void> _fetchTotpStatus() async {
+    final svc = context.read<AppProvider>().backendService;
+    if (svc == null) return;
+    setState(() => _totp2faFetching = true);
+    try {
+      final enabled = await svc.get2faStatus();
+      if (mounted) setState(() => _totpEnabled = enabled);
+    } catch (_) {
+      // silently ignore — 2FA section is non-critical
+    } finally {
+      if (mounted) setState(() => _totp2faFetching = false);
+    }
+  }
+
+  /// Shows the "Set up 2FA" dialog with QR code + confirmation code entry.
+  Future<void> _showSetup2faDialog() async {
+    final svc = context.read<AppProvider>().backendService;
+    if (svc == null) return;
+
+    // Step 1: Request a new TOTP secret from the backend.
+    TotpSetup? setup;
+    try {
+      setState(() => _busy = true);
+      setup = await svc.setup2fa();
+    } catch (e) {
+      setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      return;
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+
+    if (!mounted) return;
+
+    final codeCtrl = TextEditingController();
+    String? dialogError;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) {
+          Future<void> confirm() async {
+            final code = codeCtrl.text.trim();
+            if (code.length != 6) {
+              setDlg(() => dialogError = 'Enter the 6-digit code.');
+              return;
+            }
+            setDlg(() => dialogError = null);
+            // Capture messenger before async gap to avoid BuildContext lint.
+            final messenger = ScaffoldMessenger.of(context);
+            try {
+              await svc.confirm2fa(code);
+              if (ctx.mounted) {
+                Navigator.of(ctx).pop();
+                if (mounted) setState(() => _totpEnabled = true);
+                messenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Two-factor authentication enabled.'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            } catch (e) {
+              setDlg(() =>
+                  dialogError = e.toString().replaceFirst('Exception: ', ''));
+            }
+          }
+
+          return AlertDialog(
+            title: const Text('Set up 2FA'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Scan this QR code with your authenticator app '
+                    '(Google Authenticator, Aegis, etc.), '
+                    'then enter the 6-digit code to confirm.',
+                  ),
+                  const SizedBox(height: 16),
+                  QrImageView(
+                    data: setup!.uri,
+                    version: QrVersions.auto,
+                    size: 200,
+                    backgroundColor: Colors.white,
+                  ),
+                  const SizedBox(height: 8),
+                  // Show secret as text for manual entry
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SelectableText(
+                          setup.secret,
+                          style: const TextStyle(
+                              fontFamily: 'monospace', fontSize: 13),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.copy, size: 18),
+                        tooltip: 'Copy secret',
+                        onPressed: () => Clipboard.setData(
+                            ClipboardData(text: setup!.secret)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: codeCtrl,
+                    keyboardType: TextInputType.number,
+                    maxLength: 6,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      labelText: 'Confirm with 6-digit code',
+                      counterText: '',
+                      errorText: dialogError,
+                    ),
+                    onSubmitted: (_) => confirm(),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: confirm,
+                child: const Text('Enable 2FA'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    codeCtrl.dispose();
+  }
+
+  /// Shows the "Disable 2FA" confirmation dialog.
+  Future<void> _showDisable2faDialog() async {
+    final svc = context.read<AppProvider>().backendService;
+    if (svc == null) return;
+    final codeCtrl = TextEditingController();
+    String? dialogError;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) {
+          Future<void> disable() async {
+            final code = codeCtrl.text.trim();
+            if (code.length != 6) {
+              setDlg(() => dialogError = 'Enter the 6-digit code.');
+              return;
+            }
+            setDlg(() => dialogError = null);
+            // Capture messenger before async gap to avoid BuildContext lint.
+            final messenger = ScaffoldMessenger.of(context);
+            try {
+              await svc.disable2fa(code);
+              if (ctx.mounted) {
+                Navigator.of(ctx).pop();
+                if (mounted) setState(() => _totpEnabled = false);
+                messenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Two-factor authentication disabled.'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            } catch (e) {
+              setDlg(() =>
+                  dialogError = e.toString().replaceFirst('Exception: ', ''));
+            }
+          }
+
+          return AlertDialog(
+            title: const Text('Disable 2FA'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                    'Enter your current authenticator code to disable 2FA.'),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: codeCtrl,
+                  keyboardType: TextInputType.number,
+                  maxLength: 6,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    labelText: '6-digit code',
+                    counterText: '',
+                    errorText: dialogError,
+                  ),
+                  onSubmitted: (_) => disable(),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                    backgroundColor:
+                        Theme.of(ctx).colorScheme.error),
+                onPressed: disable,
+                child: const Text('Disable'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    codeCtrl.dispose();
+  }
+
   Future<void> _doLogin(bool register) async {
     final p = context.read<AppProvider>();
     final url = _urlCtrl.text.trim();
@@ -2406,7 +2632,14 @@ class _BackendCardState extends State<_BackendCard> {
       if (register) {
         await p.backendRegister(url, user, pass);
       } else {
-        await p.backendLogin(url, user, pass);
+        final result = await p.backendLogin(url, user, pass);
+        if (result.requires2fa && result.partialToken != null) {
+          // Show the 2FA code dialog before continuing.
+          if (mounted) {
+            await _show2faLoginDialog(p, result.partialToken!);
+          }
+          return; // dialog handles its own errors / busy state
+        }
       }
       _userCtrl.clear();
       _passCtrl.clear();
@@ -2415,6 +2648,73 @@ class _BackendCardState extends State<_BackendCard> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _show2faLoginDialog(AppProvider p, String partialToken) async {
+    setState(() => _busy = false); // release spinner while dialog is open
+    final codeCtrl = TextEditingController();
+    String? dialogError;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) {
+          Future<void> submit() async {
+            final code = codeCtrl.text.trim();
+            if (code.length != 6) {
+              setDlg(() => dialogError = 'Enter the 6-digit code from your authenticator app.');
+              return;
+            }
+            setDlg(() => dialogError = null);
+            try {
+              await p.backendComplete2fa(partialToken, code);
+              if (ctx.mounted) {
+                Navigator.of(ctx).pop();
+                _userCtrl.clear();
+                _passCtrl.clear();
+              }
+            } catch (e) {
+              setDlg(() => dialogError = e.toString().replaceFirst('Exception: ', ''));
+            }
+          }
+
+          return AlertDialog(
+            title: const Text('Two-Factor Authentication'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Enter the 6-digit code from your authenticator app.'),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: codeCtrl,
+                  keyboardType: TextInputType.number,
+                  maxLength: 6,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    labelText: 'TOTP code',
+                    counterText: '',
+                    errorText: dialogError,
+                  ),
+                  onSubmitted: (_) => submit(),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: submit,
+                child: const Text('Verify'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    codeCtrl.dispose();
   }
 
   @override
@@ -2590,6 +2890,51 @@ class _BackendCardState extends State<_BackendCard> {
                 child: const Text('Logout'),
               ),
             ),
+
+            const Divider(height: 1),
+
+            // ── 2FA management ───────────────────────────────────────────
+            Builder(builder: (ctx) {
+              // Fetch status once when we first render this section.
+              if (_totpEnabled == null && !_totp2faFetching) {
+                WidgetsBinding.instance.addPostFrameCallback(
+                    (_) => _fetchTotpStatus());
+              }
+              return ListTile(
+                leading: const Icon(Icons.security_outlined),
+                title: const Text('Two-Factor Authentication'),
+                subtitle: _totp2faFetching
+                    ? const Text('Checking status…')
+                    : _totpEnabled == null
+                        ? null
+                        : Text(
+                            _totpEnabled! ? 'Enabled' : 'Disabled',
+                            style: TextStyle(
+                              color: _totpEnabled! ? cs.primary : cs.onSurfaceVariant,
+                            ),
+                          ),
+                trailing: _totp2faFetching
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : _totpEnabled == null
+                        ? null
+                        : _totpEnabled!
+                            ? OutlinedButton(
+                                onPressed: _showDisable2faDialog,
+                                style: OutlinedButton.styleFrom(
+                                    foregroundColor: cs.error,
+                                    side: BorderSide(color: cs.error)),
+                                child: const Text('Disable'),
+                              )
+                            : FilledButton.tonal(
+                                onPressed: _showSetup2faDialog,
+                                child: const Text('Set up'),
+                              ),
+              );
+            }),
           ],
         ]);
       },

@@ -73,6 +73,27 @@ class BEToolCall extends BackendEvent {
   });
 }
 
+// ── Auth result types ─────────────────────────────────────────────────────────
+
+class LoginResult {
+  /// Full access token — set when login is complete (no 2FA or 2FA already done).
+  final String? token;
+
+  /// True when the server requires a TOTP code before issuing a full token.
+  final bool requires2fa;
+
+  /// Partial token to send alongside the TOTP code to complete login.
+  final String? partialToken;
+
+  const LoginResult({this.token, this.requires2fa = false, this.partialToken});
+}
+
+class TotpSetup {
+  final String secret;
+  final String uri;
+  const TotpSetup({required this.secret, required this.uri});
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 class BackendService {
@@ -126,60 +147,111 @@ class BackendService {
 
   // ── Auth (static — no token required) ────────────────────────────────────
 
-  static Future<String> loginStatic(
+  /// Login; returns a [LoginResult]. If [LoginResult.requires2fa] is true,
+  /// call [complete2faStatic] with the [LoginResult.partialToken] and the TOTP code.
+  static Future<LoginResult> loginStatic(
     String baseUrl,
-    String username,
-    String password, {
-    bool allowSelfSigned = false,
-  }) =>
-      _authCall(baseUrl, 'login', username, password,
-          allowSelfSigned: allowSelfSigned);
-
-  static Future<String> registerStatic(
-    String baseUrl,
-    String username,
-    String password, {
-    bool allowSelfSigned = false,
-  }) =>
-      _authCall(baseUrl, 'register', username, password,
-          allowSelfSigned: allowSelfSigned);
-
-  static Future<String> _authCall(
-    String baseUrl,
-    String endpoint,
     String username,
     String password, {
     bool allowSelfSigned = false,
   }) async {
     final base = baseUrl.trimRight().replaceAll(RegExp(r'/$'), '');
-    http.Client client;
-    if (allowSelfSigned) {
-      final inner = HttpClient()
-        ..badCertificateCallback = (cert, host, port) => true;
-      client = IOClient(inner);
-    } else {
-      client = http.Client();
-    }
+    final client = _makeClient(allowSelfSigned);
     try {
       final resp = await client
           .post(
-            Uri.parse('$base/api/auth/$endpoint'),
+            Uri.parse('$base/api/auth/login'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'username': username, 'password': password}),
           )
           .timeout(const Duration(seconds: 15));
-
       if (resp.statusCode == 200 || resp.statusCode == 201) {
-        return jsonDecode(resp.body)['access_token'] as String;
+        final body = jsonDecode(resp.body) as Map<String, dynamic>;
+        if (body['requires_2fa'] == true) {
+          return LoginResult(
+            requires2fa: true,
+            partialToken: body['partial_token'] as String?,
+          );
+        }
+        return LoginResult(token: body['access_token'] as String);
       }
       String? detail;
       try {
-        detail = jsonDecode(resp.body)['detail'] as String?;
+        detail = (jsonDecode(resp.body) as Map<String, dynamic>)['detail'] as String?;
       } catch (_) {}
       throw Exception(detail ?? 'Authentication failed (${resp.statusCode})');
     } finally {
       client.close();
     }
+  }
+
+  /// Register a new account; returns the access token string directly.
+  static Future<String> registerStatic(
+    String baseUrl,
+    String username,
+    String password, {
+    bool allowSelfSigned = false,
+  }) async {
+    final base = baseUrl.trimRight().replaceAll(RegExp(r'/$'), '');
+    final client = _makeClient(allowSelfSigned);
+    try {
+      final resp = await client
+          .post(
+            Uri.parse('$base/api/auth/register'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'username': username, 'password': password}),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (resp.statusCode == 200 || resp.statusCode == 201) {
+        return (jsonDecode(resp.body) as Map<String, dynamic>)['access_token'] as String;
+      }
+      String? detail;
+      try {
+        detail = (jsonDecode(resp.body) as Map<String, dynamic>)['detail'] as String?;
+      } catch (_) {}
+      throw Exception(detail ?? 'Registration failed (${resp.statusCode})');
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Complete a 2FA login by exchanging [partialToken] + [code] for a full token.
+  static Future<String> complete2faStatic(
+    String baseUrl,
+    String partialToken,
+    String code, {
+    bool allowSelfSigned = false,
+  }) async {
+    final base = baseUrl.trimRight().replaceAll(RegExp(r'/$'), '');
+    final client = _makeClient(allowSelfSigned);
+    try {
+      final resp = await client
+          .post(
+            Uri.parse('$base/api/auth/2fa/complete'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'partial_token': partialToken, 'code': code}),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (resp.statusCode == 200) {
+        return (jsonDecode(resp.body) as Map<String, dynamic>)['access_token'] as String;
+      }
+      String? detail;
+      try {
+        detail = (jsonDecode(resp.body) as Map<String, dynamic>)['detail'] as String?;
+      } catch (_) {}
+      throw Exception(detail ?? '2FA failed (${resp.statusCode})');
+    } finally {
+      client.close();
+    }
+  }
+
+  static http.Client _makeClient(bool allowSelfSigned) {
+    if (allowSelfSigned) {
+      final inner = HttpClient()
+        ..badCertificateCallback = (cert, host, port) => true;
+      return IOClient(inner);
+    }
+    return http.Client();
   }
 
   // ── WebSocket lifecycle ───────────────────────────────────────────────────
@@ -524,6 +596,75 @@ class BackendService {
           .timeout(const Duration(seconds: 15));
       _check(resp);
       return (jsonDecode(resp.body) as Map<String, dynamic>)['title'] as String;
+    } finally {
+      client.close();
+    }
+  }
+
+  // ── REST: 2FA management (requires auth) ─────────────────────────────────
+
+  /// Generate a new TOTP secret for this account. 2FA is NOT yet active until
+  /// [confirm2fa] is called with a valid code.
+  Future<TotpSetup> setup2fa() async {
+    final client = _httpClient();
+    try {
+      final resp = await client
+          .post(Uri.parse('$_base/api/auth/2fa/setup'), headers: _headers)
+          .timeout(const Duration(seconds: 15));
+      _check(resp);
+      final body = jsonDecode(resp.body) as Map<String, dynamic>;
+      return TotpSetup(
+        secret: body['secret'] as String,
+        uri: body['uri'] as String,
+      );
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Confirm the first TOTP code to enable 2FA on the account.
+  Future<void> confirm2fa(String code) async {
+    final client = _httpClient();
+    try {
+      final resp = await client
+          .post(
+            Uri.parse('$_base/api/auth/2fa/confirm'),
+            headers: _headers,
+            body: jsonEncode({'code': code}),
+          )
+          .timeout(const Duration(seconds: 15));
+      _check(resp);
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Disable 2FA — requires a valid current TOTP code.
+  Future<void> disable2fa(String code) async {
+    final client = _httpClient();
+    try {
+      final resp = await client
+          .post(
+            Uri.parse('$_base/api/auth/2fa/disable'),
+            headers: _headers,
+            body: jsonEncode({'code': code}),
+          )
+          .timeout(const Duration(seconds: 15));
+      _check(resp);
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Returns true if 2FA is currently enabled for the authenticated user.
+  Future<bool> get2faStatus() async {
+    final client = _httpClient();
+    try {
+      final resp = await client
+          .get(Uri.parse('$_base/api/auth/2fa/status'), headers: _headers)
+          .timeout(const Duration(seconds: 15));
+      _check(resp);
+      return (jsonDecode(resp.body) as Map<String, dynamic>)['totp_enabled'] as bool? ?? false;
     } finally {
       client.close();
     }

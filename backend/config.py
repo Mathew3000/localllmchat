@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
     database_url: str = "sqlite+aiosqlite:////data/db.sqlite"
+    registration_enabled: bool = True
 
 
 settings = Settings()

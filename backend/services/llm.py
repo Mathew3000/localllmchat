@@ -26,6 +26,7 @@ from sqlalchemy import select
 
 from models import Conversation, Message, UserSettings
 from services.ws_hub import hub
+from services.mcp import AnyMcpClient, fetch_memory_context, load_tools_from_settings
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -166,6 +167,7 @@ async def run_generation(
     in_thinking = False
     thinking_closed = False
     conv: Conversation | None = None
+    mcp_tool_clients: dict = {}
 
     async def _send(data: dict) -> None:
         """Fire-and-forget send; silently swallows send errors."""
@@ -202,6 +204,15 @@ async def run_generation(
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+
+        # ── Backend-side MCP ──────────────────────────────────────────────────
+        # When the client sends no tools, the backend reads mcpServers from the
+        # stored user settings, connects to them directly, and handles tool
+        # execution itself — no round-trip to the Flutter client needed.
+        if not tools:
+            tools, mcp_tool_clients = await load_tools_from_settings(settings)
+            if not memory_context:
+                memory_context = await fetch_memory_context(settings)
 
         # ── Create placeholder assistant message ──────────────────────────────
         assistant_msg = Message(
@@ -384,48 +395,86 @@ async def run_generation(
                 conv.updated_at = datetime.now(timezone.utc)
                 await db.commit()
 
-                # Register futures for ALL tool calls BEFORE sending any events
-                # so that the client can return results in any order.
-                futures: dict[str, asyncio.Future] = {
-                    tc["id"]: hub.create_tool_result_future(
-                        conversation_id, tc["id"]
-                    )
-                    for tc in tool_calls_list
-                }
+                if mcp_tool_clients:
+                    # ── Server-side execution (backend MCP mode) ──────────────
+                    # Execute all tool calls directly against the MCP servers.
+                    # No round-trip to the Flutter client — works when client
+                    # is away from home and can't reach the MCP servers.
+                    for tc in tool_calls_list:
+                        tc_name: str = tc["function"]["name"]
+                        try:
+                            tc_args: dict = json.loads(tc["function"]["arguments"])
+                        except (json.JSONDecodeError, TypeError):
+                            tc_args = {}
+                        mcp_client = mcp_tool_clients.get(tc_name)
+                        if mcp_client is None:
+                            result_content = f'Tool error: unknown tool "{tc_name}"'
+                        else:
+                            try:
+                                result_content = await asyncio.wait_for(
+                                    mcp_client.call_tool(tc_name, tc_args),
+                                    timeout=120.0,
+                                )
+                            except asyncio.TimeoutError:
+                                result_content = "Tool execution timed out"
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as e:
+                                result_content = f"Tool error: {e}"
+                        db.add(Message(
+                            id=str(uuid.uuid4()),
+                            conversation_id=conversation_id,
+                            role="tool",
+                            tool_call_id=tc["id"],
+                            content=result_content,
+                            created_at=datetime.now(timezone.utc),
+                        ))
+                    await db.commit()
 
-                # Notify the client of each tool call
-                for tc in tool_calls_list:
-                    await _send({
-                        "type": "tool_call",
-                        "conversation_id": conversation_id,
-                        "message_id": assistant_msg.id,
-                        "call_id": tc["id"],
-                        "name": tc["function"]["name"],
-                        "arguments": tc["function"]["arguments"],
-                    })
-
-                # Await results and persist tool-result messages
-                for tc in tool_calls_list:
-                    try:
-                        tool_result = await asyncio.wait_for(
-                            futures[tc["id"]], timeout=120.0
+                else:
+                    # ── Client relay mode (original behaviour) ────────────────
+                    # Register futures for ALL tool calls BEFORE sending any events
+                    # so that the client can return results in any order.
+                    futures: dict[str, asyncio.Future] = {
+                        tc["id"]: hub.create_tool_result_future(
+                            conversation_id, tc["id"]
                         )
-                        result_content: str = tool_result.get("content", "")
-                    except asyncio.TimeoutError:
-                        result_content = "Tool execution timed out"
-                    except asyncio.CancelledError:
-                        hub.cancel_tool_futures(conversation_id)
-                        raise
+                        for tc in tool_calls_list
+                    }
 
-                    db.add(Message(
-                        id=str(uuid.uuid4()),
-                        conversation_id=conversation_id,
-                        role="tool",
-                        tool_call_id=tc["id"],
-                        content=result_content,
-                        created_at=datetime.now(timezone.utc),
-                    ))
-                await db.commit()
+                    # Notify the client of each tool call
+                    for tc in tool_calls_list:
+                        await _send({
+                            "type": "tool_call",
+                            "conversation_id": conversation_id,
+                            "message_id": assistant_msg.id,
+                            "call_id": tc["id"],
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"]["arguments"],
+                        })
+
+                    # Await results and persist tool-result messages
+                    for tc in tool_calls_list:
+                        try:
+                            tool_result = await asyncio.wait_for(
+                                futures[tc["id"]], timeout=120.0
+                            )
+                            result_content = tool_result.get("content", "")
+                        except asyncio.TimeoutError:
+                            result_content = "Tool execution timed out"
+                        except asyncio.CancelledError:
+                            hub.cancel_tool_futures(conversation_id)
+                            raise
+
+                        db.add(Message(
+                            id=str(uuid.uuid4()),
+                            conversation_id=conversation_id,
+                            role="tool",
+                            tool_call_id=tc["id"],
+                            content=result_content,
+                            created_at=datetime.now(timezone.utc),
+                        ))
+                    await db.commit()
 
                 # Create new assistant placeholder for the next iteration
                 assistant_msg = Message(
@@ -490,7 +539,8 @@ async def run_generation(
         await _send(max_iter_payload)
 
     except asyncio.CancelledError:
-        hub.cancel_tool_futures(conversation_id)
+        if not mcp_tool_clients:
+            hub.cancel_tool_futures(conversation_id)
         # Save whatever was streamed so far
         if assistant_msg is not None and content_buf:
             partial = "".join(content_buf)
@@ -506,7 +556,8 @@ async def run_generation(
         raise
 
     except Exception as e:
-        hub.cancel_tool_futures(conversation_id)
+        if not mcp_tool_clients:
+            hub.cancel_tool_futures(conversation_id)
         await _send({
             "type": "error",
             "conversation_id": conversation_id,

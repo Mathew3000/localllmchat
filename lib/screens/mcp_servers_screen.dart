@@ -446,6 +446,15 @@ class _McpServerCardState extends State<_McpServerCard> {
                       primary: true,
                     ),
                   )
+                else if (widget.inBackendMode)
+                  // In backend mode the server fetches & executes tools itself.
+                  _StatusChip(
+                    icon: Icon(Icons.cloud_done_outlined,
+                        size: 14, color: cs.primary),
+                    label: 'Server handles',
+                    cs: cs,
+                    primary: true,
+                  )
                 else
                   _StatusChip(
                     icon: Icon(Icons.extension_off_outlined,
