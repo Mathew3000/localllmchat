@@ -67,19 +67,21 @@ lib/
 
 backend/                       – Self-hosted generation backend (Python / FastAPI)
 ├── main.py                    – FastAPI app, router registration
+├── manage.py                  – CLI: create_user, list_users
 ├── models.py                  – SQLAlchemy ORM models (User, Conversation, Message, …)
 ├── schemas.py                 – Pydantic request / response schemas
-├── auth.py                    – JWT helpers
+├── auth.py                    – JWT + TOTP helpers
 ├── database.py                – Async SQLAlchemy session factory
 ├── dependencies.py            – FastAPI dependency injectors
 ├── routers/
-│   ├── auth.py                – POST /api/auth/{register,login}
+│   ├── auth.py                – POST /api/auth/{register,login}, 2FA endpoints
 │   ├── conversations.py       – CRUD + auto-title endpoint
 │   ├── models_router.py       – GET /api/models (proxies LLM server)
 │   ├── settings.py            – GET/PUT /api/settings
 │   └── ws.py                  – WebSocket /ws (streaming, tool relay)
 └── services/
-    ├── llm.py                 – Core generation loop (streaming, tool-call relay)
+    ├── llm.py                 – Core generation loop (streaming, server-side MCP)
+    ├── mcp.py                 – Async MCP client (Streamable-HTTP + SSE transports)
     └── ws_hub.py              – Per-user WebSocket hub
 
 sync_server/                   – Self-hosted sync backend (Go + SQLite)
@@ -175,9 +177,49 @@ docker compose up --build -d
 
 ### Connecting the app
 
-1. Settings → enable **Backend Mode**
-2. Enter the backend URL and register / log in
-3. The app switches to WebSocket streaming and syncs conversations automatically
+1. Settings → **Backend Server**
+2. Enter the backend URL (home) and optionally an Away URL (VPN / Tailscale — only the backend connection needs one; MCP servers and the LLM are reached by the backend itself)
+3. Register (first run) or Log in
+4. If 2FA is enabled, enter the 6-digit code from your authenticator app
+5. The app switches to WebSocket streaming and syncs conversations automatically
+
+### Security options
+
+| env var | default | purpose |
+|---|---|---|
+| `REGISTRATION_ENABLED` | `true` | Set to `false` to lock `/register` |
+| `SECRET_KEY` | insecure default | **Change this** — signs all JWT tokens |
+
+When `REGISTRATION_ENABLED=false`, create accounts via `manage.py` (see *Creating accounts when registration is disabled* below). Enable 2FA per-account from the app after logging in.
+
+---
+
+## Creating accounts when registration is disabled
+
+When `REGISTRATION_ENABLED=false` is set, the `/register` endpoint is locked. Use the management CLI inside the running container instead:
+
+```bash
+# Interactive (prompts for username + password)
+docker exec -it loomchat-backend python manage.py create_user
+
+# Or pass the username directly
+docker exec -it loomchat-backend python manage.py create_user alice
+
+# List existing accounts
+docker exec -it loomchat-backend python manage.py list_users
+```
+
+Passwords must be at least 8 characters. The container name (`loomchat-backend`) must match the `container_name` in your `docker-compose.yml`.
+
+### Recommended docker-compose.yml settings for public exposure
+
+```yaml
+environment:
+  REGISTRATION_ENABLED: "false"
+  SECRET_KEY: "$(openssl rand -hex 32)"   # generate once, paste the value
+```
+
+Then redeploy with `docker compose up --build -d`. After that, only accounts created via `manage.py` can log in. Enable 2FA in the app under **Settings → Backend Server → Two-Factor Authentication → Set up** once logged in.
 
 ---
 
