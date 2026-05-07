@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 
 // ── Attached image data class ─────────────────────────────────────────────────
@@ -115,6 +117,65 @@ class _ChatInputState extends State<ChatInput> {
   }
 
   // ── Image helpers ──────────────────────────────────────────────────────────
+
+  /// True on platforms where taking a photo with the camera is supported.
+  bool get _hasCameraSupport =>
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+
+  /// Entry point for the image button.  Shows a source sheet on mobile;
+  /// falls through to the file picker on desktop.
+  Future<void> _onImageButtonPressed() async {
+    if (_hasCameraSupport) {
+      await _showImageSourceSheet();
+    } else {
+      await _pickImages();
+    }
+  }
+
+  /// Bottom sheet that lets the user choose between camera and gallery.
+  Future<void> _showImageSourceSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt_outlined),
+              title: const Text('Take photo'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _capturePhoto();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Choose from gallery'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickImages();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Opens the device camera and appends the captured photo.
+  Future<void> _capturePhoto() async {
+    final photo = await ImagePicker().pickImage(
+      source: ImageSource.camera,
+      imageQuality: 85,
+      maxWidth: 1920,
+      maxHeight: 1920,
+    );
+    if (photo == null) return;
+    final bytes = await photo.readAsBytes();
+    final ext = photo.path.split('.').last.toLowerCase();
+    _addImageBytes(bytes, _mimeFromExt(ext));
+  }
 
   Future<void> _pickImages() async {
     final result = await FilePicker.platform.pickFiles(
@@ -241,9 +302,9 @@ class _ChatInputState extends State<ChatInput> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 2),
                 child: Tooltip(
-                  message: 'Attach image',
+                  message: _hasCameraSupport ? 'Attach image / camera' : 'Attach image',
                   child: IconButton(
-                    onPressed: _pickImages,
+                    onPressed: _onImageButtonPressed,
                     icon: Icon(
                       Icons.image_outlined,
                       color: hasImages

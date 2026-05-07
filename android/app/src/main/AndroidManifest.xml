@@ -4,6 +4,10 @@
     <!-- Network access to local LLM servers -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
+    <!-- Camera access for the "Take photo" option in chat input -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+
     <!-- Keep CPU alive while streaming (screen-off / Doze) -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
