@@ -372,6 +372,10 @@ async def load_tools_from_settings(
     for server in servers:
         if not server.get("enabled", True):
             continue
+        if server.get("localOnly", False):
+            # Local-only servers are reached by the client (not the backend).
+            # Their tools are relayed through the WebSocket by the client app.
+            continue
         url: str = server.get("baseUrlHome", "").strip()
         if not url:
             continue
@@ -398,7 +402,12 @@ async def fetch_memory_context(settings: dict) -> str | None:
     """
     servers: list[dict] = settings.get("mcpServers", [])
     memory_server = next(
-        (s for s in servers if s.get("isMemory") and s.get("enabled", True)),
+        (
+            s for s in servers
+            if s.get("isMemory")
+            and s.get("enabled", True)
+            and not s.get("localOnly", False)  # can't reach client-local servers
+        ),
         None,
     )
     if not memory_server:

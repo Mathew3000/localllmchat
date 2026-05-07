@@ -45,6 +45,14 @@ class McpServer {
   /// new information it learns during the conversation.
   bool isMemory;
 
+  /// When true (and backend mode is active), the *client* connects to this
+  /// server instead of the backend.  Tool calls are relayed from the backend
+  /// to the client over the WebSocket and executed locally, then the result
+  /// is sent back.  Use this for MCP servers that only run on the home
+  /// network / local machine (e.g. a filesystem browser) which the backend
+  /// cannot reach.
+  bool localOnly;
+
   McpServer({
     String? id,
     this.name = 'New Server',
@@ -54,6 +62,7 @@ class McpServer {
     this.transport = McpTransport.auto,
     this.headers = const {},
     this.isMemory = false,
+    this.localOnly = false,
   }) : id = id ?? const Uuid().v4();
 
   McpServer copyWith({
@@ -64,6 +73,7 @@ class McpServer {
     McpTransport? transport,
     Map<String, String>? headers,
     bool? isMemory,
+    bool? localOnly,
   }) =>
       McpServer(
         id: id,
@@ -74,6 +84,7 @@ class McpServer {
         transport: transport ?? this.transport,
         headers: headers ?? Map.of(this.headers),
         isMemory: isMemory ?? this.isMemory,
+        localOnly: localOnly ?? this.localOnly,
       );
 
   Map<String, dynamic> toJson() => {
@@ -85,6 +96,7 @@ class McpServer {
         'transport': transport.name, // 'auto' | 'streamableHttp' | 'sse'
         'headers': headers,
         'isMemory': isMemory,
+        'localOnly': localOnly,
       };
 
   factory McpServer.fromJson(Map<String, dynamic> json) => McpServer(
@@ -100,5 +112,6 @@ class McpServer {
         headers: (json['headers'] as Map<String, dynamic>? ?? {})
             .map((k, v) => MapEntry(k, v as String)),
         isMemory: json['isMemory'] as bool? ?? false,
+        localOnly: json['localOnly'] as bool? ?? false,
       );
 }

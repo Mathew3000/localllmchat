@@ -278,13 +278,15 @@ class _McpServerCardState extends State<_McpServerCard> {
             hint: 'http://192.168.1.x:4242',
             helper: 'Home / local network',
             onCommit: _commit,
-            trailing: !widget.inBackendMode &&
+            trailing: (!widget.inBackendMode || widget.server.localOnly) &&
                     widget.server.baseUrlAway.isNotEmpty &&
                     !widget.usingAway
                 ? _ActiveBadge(label: 'active', cs: cs)
                 : null,
           ),
-          if (!widget.inBackendMode) ...[
+          // Show Away URL when not in backend mode, OR when in backend mode
+          // with localOnly=true (client reaches this server, away URL matters).
+          if (!widget.inBackendMode || widget.server.localOnly) ...[
             const Divider(height: 1),
 
             // ── Away URL ───────────────────────────────────────────────────
@@ -414,6 +416,53 @@ class _McpServerCardState extends State<_McpServerCard> {
               ],
             ),
           ),
+          // ── Local-only toggle (backend mode only) ─────────────────────────
+          if (widget.inBackendMode) ...[
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.computer_outlined,
+                    size: 16,
+                    color: widget.server.localOnly
+                        ? cs.tertiary
+                        : cs.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Local only',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: widget.server.localOnly
+                                ? cs.tertiary
+                                : cs.onSurface,
+                            fontWeight: widget.server.localOnly
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                          ),
+                        ),
+                        Text(
+                          'This app connects to the server; tool calls are relayed to the backend. Use for servers only reachable on your local network.',
+                          style: theme.textTheme.labelSmall
+                              ?.copyWith(color: cs.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch.adaptive(
+                    value: widget.server.localOnly,
+                    onChanged: (v) => widget.onChanged(
+                        widget.server.copyWith(localOnly: v)),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const Divider(height: 1),
 
           // ── Status row ────────────────────────────────────────────────────
@@ -446,14 +495,22 @@ class _McpServerCardState extends State<_McpServerCard> {
                       primary: true,
                     ),
                   )
-                else if (widget.inBackendMode)
-                  // In backend mode the server fetches & executes tools itself.
+                else if (widget.inBackendMode && !widget.server.localOnly)
+                  // Backend connects to this server itself — no client fetch.
                   _StatusChip(
                     icon: Icon(Icons.cloud_done_outlined,
                         size: 14, color: cs.primary),
                     label: 'Server handles',
                     cs: cs,
                     primary: true,
+                  )
+                else if (widget.inBackendMode && widget.server.localOnly)
+                  // Client will relay tools once fetched (tap Fetch to load).
+                  _StatusChip(
+                    icon: Icon(Icons.computer_outlined,
+                        size: 14, color: cs.tertiary),
+                    label: 'No tools — tap Fetch',
+                    cs: cs,
                   )
                 else
                   _StatusChip(

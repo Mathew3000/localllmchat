@@ -595,9 +595,13 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Fetches tools for all currently enabled servers (in parallel).
   Future<void> fetchMcpTools() => _fetchAllMcpTools();
 
-  Future<void> _fetchAllMcpTools() async {
+  /// [localOnlyOnly] = true → only fetch servers marked [McpServer.localOnly].
+  /// Used in backend mode to prime the client-relay set without fetching
+  /// servers that the backend handles itself.
+  Future<void> _fetchAllMcpTools({bool localOnlyOnly = false}) async {
     final enabled = _settings.mcpServers
         .where((s) => s.enabled && s.baseUrlHome.isNotEmpty)
+        .where((s) => !localOnlyOnly || s.localOnly)
         .toList();
     if (enabled.isEmpty) return;
     await Future.wait(enabled.map(fetchMcpToolsForServer));
@@ -662,10 +666,16 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rebuildToolServiceMap();
     notifyListeners();
 
-    // Kick off fetches outside the synchronous path — only in direct mode.
-    // In backend mode the server handles MCP; the client skips fetching.
+    // Kick off fetches outside the synchronous path.
+    // In direct mode: fetch everything.
+    // In backend mode: only fetch localOnly servers (client relay); the
+    // backend connects to the rest itself from its own network.
     if (!(_settings.useBackend && _settings.backendToken.isNotEmpty)) {
       for (final s in toFetch) {
+        fetchMcpToolsForServer(s);
+      }
+    } else {
+      for (final s in toFetch.where((s) => s.localOnly)) {
         fetchMcpToolsForServer(s);
       }
     }
@@ -893,9 +903,11 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_activeConversation != null) {
         _loadConversationMessages(_activeConversation!.id);
       }
-      // In backend mode the server handles MCP — skip client-side fetching.
-      // (The client can't reach MCP servers when away from home, and the
-      // backend reads its own copy of the mcpServers settings directly.)
+      // In backend mode the server handles most MCP servers directly.
+      // However, servers marked localOnly run on the client's local network
+      // and must be reached by the client — fetch their tools now so they can
+      // be relayed through the WebSocket during generation.
+      _fetchAllMcpTools(localOnlyOnly: true);
     } catch (e) {
       _backendConnectError = e.toString();
       _backend?.dispose();
@@ -1272,19 +1284,30 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     _streamingBackendConvId = conv.id;
     notifyListeners();
 
+    // Collect tool schemas from localOnly servers so the backend can include
+    // them in the LLM request.  The actual tool execution is relayed back to
+    // the client via the WebSocket (BEToolCall → _executeRelayedToolCall).
+    final List<Map<String, dynamic>> localOnlyTools = [];
+    if (_mcpActive) {
+      for (final server in _settings.mcpServers) {
+        if (!server.enabled || !server.localOnly) continue;
+        for (final tool in (_mcpToolsByServer[server.id] ?? [])) {
+          localOnlyTools.add(tool.toOpenAiTool());
+        }
+      }
+    }
+
     try {
       await _backend!.sendMessage(
         conv.id,
         userMsg.content,
         userMsg.images,
         messageId: userMsg.id,
-        // Do NOT send tools — the backend reads mcpServers from the stored
-        // user settings and handles tool listing + execution itself.
-        // This means MCP works even when the client is away from home.
-        //
-        // memoryContext is also omitted — the backend pre-fetches it from
-        // the memory MCP server (if configured) before the first LLM call.
-        //
+        // localOnly tools are sent by the client and relayed via WebSocket;
+        // all other MCP servers are handled by the backend directly.
+        // memoryContext is omitted — backend pre-fetches it from non-local
+        // memory servers before the first LLM call.
+        tools: localOnlyTools,
         // Send the client's local datetime so the backend uses the user's
         // timezone rather than the server's (which is often UTC in Docker).
         clientDatetime: settings.injectDateTime
