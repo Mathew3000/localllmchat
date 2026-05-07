@@ -259,6 +259,7 @@ async def run_generation(
                     client_datetime=client_datetime,
                 ),
                 "stream": True,
+                "stream_options": {"include_usage": True},
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }

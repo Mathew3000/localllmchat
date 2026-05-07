@@ -33,6 +33,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late int _contextWindowTokens;
   String? _selectedModel;
   bool _apiKeyVisible = false;
+  late bool _allowSelfSigned;
   late int _requestTimeoutSeconds;
   int? _globalBgColor;
   int? _defaultUserBubbleColor;
@@ -51,6 +52,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _maxTokens = s.maxTokens;
     _contextWindowTokens = s.contextWindowTokens;
     _selectedModel = s.selectedModel.isEmpty ? null : s.selectedModel;
+    _allowSelfSigned = s.allowSelfSigned;
     _requestTimeoutSeconds = s.requestTimeoutSeconds;
     _globalBgColor = s.backgroundColor;
     _defaultUserBubbleColor = s.defaultUserBubbleColor;
@@ -105,6 +107,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         backendToken: s.backendToken,
         backendAllowSelfSigned: s.backendAllowSelfSigned,
         backendAwayUrl: s.backendAwayUrl,
+        allowSelfSigned: _allowSelfSigned,
         fileMcpEnabled: s.fileMcpEnabled,
       ),
     );
@@ -199,6 +202,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
+              ),
+              const Divider(height: 1),
+              SwitchListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                title: const Text('Allow self-signed certificate'),
+                subtitle: const Text(
+                  'Disable TLS validation for the LLM API (use on private networks only)',
+                ),
+                value: _allowSelfSigned,
+                onChanged: (v) => setState(() => _allowSelfSigned = v),
               ),
             ],
           ),

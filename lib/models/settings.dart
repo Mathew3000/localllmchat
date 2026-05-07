@@ -89,6 +89,12 @@ class AppSettings {
   /// when [backendUrl] (home) is unreachable.  Device-local — excluded from sync.
   final String backendAwayUrl;
 
+  // ── Direct API TLS ────────────────────────────────────────────────────────
+  /// When true, TLS certificate errors are ignored for all direct LLM API
+  /// connections (fetchModels, fetchTitle, streamChat, etc.).
+  /// Device-local — excluded from sync.
+  final bool allowSelfSigned;
+
   // ── Built-in file MCP ──────────────────────────────────────────────────────
   /// When true, a folder-picker button is shown in the chat input.
   /// Once the user selects a folder, a built-in filesystem MCP service is
@@ -130,6 +136,7 @@ class AppSettings {
     this.backendToken = '',
     this.backendAllowSelfSigned = false,
     this.backendAwayUrl = '',
+    this.allowSelfSigned = false,
     this.fileMcpEnabled = false,
   });
 
@@ -176,6 +183,7 @@ class AppSettings {
     String? backendToken,
     bool? backendAllowSelfSigned,
     String? backendAwayUrl,
+    bool? allowSelfSigned,
     bool? fileMcpEnabled,
   }) =>
       AppSettings(
@@ -222,6 +230,7 @@ class AppSettings {
         backendAllowSelfSigned:
             backendAllowSelfSigned ?? this.backendAllowSelfSigned,
         backendAwayUrl: backendAwayUrl ?? this.backendAwayUrl,
+        allowSelfSigned: allowSelfSigned ?? this.allowSelfSigned,
         fileMcpEnabled: fileMcpEnabled ?? this.fileMcpEnabled,
       );
 
@@ -258,6 +267,7 @@ class AppSettings {
         'backendToken': backendToken,
         'backendAllowSelfSigned': backendAllowSelfSigned,
         'backendAwayUrl': backendAwayUrl,
+        'allowSelfSigned': allowSelfSigned,
         'fileMcpEnabled': fileMcpEnabled,
       };
 
@@ -279,6 +289,8 @@ class AppSettings {
     j.remove('backendToken');
     j.remove('backendAllowSelfSigned');
     j.remove('backendAwayUrl');
+    // Direct API TLS bypass is device-local.
+    j.remove('allowSelfSigned');
     // File MCP enabled flag is device-local (folder paths differ per device).
     j.remove('fileMcpEnabled');
     return j;
@@ -339,6 +351,7 @@ class AppSettings {
       backendAllowSelfSigned:
           json['backendAllowSelfSigned'] as bool? ?? false,
       backendAwayUrl: json['backendAwayUrl'] as String? ?? '',
+      allowSelfSigned: json['allowSelfSigned'] as bool? ?? false,
       fileMcpEnabled: json['fileMcpEnabled'] as bool? ?? false,
     );
   }

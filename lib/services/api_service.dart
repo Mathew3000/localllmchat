@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:intl/intl.dart';
 import '../models/message.dart';
 import '../models/settings.dart';
@@ -10,6 +12,10 @@ import 'debug_logger.dart';
 class ApiService {
   final AppSettings settings;
   final String _url;
+  // Lazily-created HTTP client; respects allowSelfSigned for LAN self-signed certs.
+  late final http.Client _client = settings.allowSelfSigned
+      ? IOClient(HttpClient()..badCertificateCallback = (_, __, ___) => true)
+      : http.Client();
 
   ApiService(this.settings, String activeBaseUrl) : _url = activeBaseUrl;
 
@@ -77,7 +83,7 @@ class ApiService {
       'max_tokens': 20,
     });
     DebugLogger.instance.logRequest('LLM', 'POST', uri.toString(), body);
-    final response = await http
+    final response = await _client
         .post(uri, headers: _headers, body: body)
         .timeout(const Duration(seconds: 15));
     DebugLogger.instance.logResponse(
@@ -99,7 +105,7 @@ class ApiService {
   Future<List<String>> fetchModels() async {
     final uri = Uri.parse('$_baseUrl/models');
     DebugLogger.instance.logRequest('LLM', 'GET', uri.toString(), '');
-    final response = await http
+    final response = await _client
         .get(uri, headers: _headers)
         .timeout(const Duration(seconds: 10));
     DebugLogger.instance.logResponse('LLM', uri.toString(), response.statusCode, response.body);
@@ -119,8 +125,8 @@ class ApiService {
     final request = http.Request('POST', uri)
       ..headers.addAll(_headers)
       ..body = body;
-    final resp = await request
-        .send()
+    final resp = await _client
+        .send(request)
         .timeout(Duration(seconds: settings.requestTimeoutSeconds));
     if (resp.statusCode != 200) {
       final err = await resp.stream.bytesToString();

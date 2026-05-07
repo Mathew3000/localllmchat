@@ -431,10 +431,13 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<bool> _pingHome() async {
+    final client = _settings.allowSelfSigned
+        ? IOClient(HttpClient()..badCertificateCallback = (_, __, ___) => true)
+        : http.Client();
     try {
       var url = _settings.baseUrlHome.trimRight();
       if (url.endsWith('/')) url = url.substring(0, url.length - 1);
-      await http
+      await client
           .get(Uri.parse('$url/models'), headers: {
             if (_settings.apiKey.isNotEmpty)
               'Authorization': 'Bearer ${_settings.apiKey}',
@@ -452,6 +455,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         return false;
       }
       return true;
+    } finally {
+      client.close();
     }
   }
 

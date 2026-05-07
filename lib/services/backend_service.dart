@@ -9,6 +9,7 @@ import 'package:web_socket_channel/io.dart';
 import '../models/conversation.dart';
 import '../models/message.dart';
 import '../models/tool_call.dart';
+import 'debug_logger.dart';
 
 // ── WebSocket event hierarchy ─────────────────────────────────────────────────
 
@@ -306,14 +307,17 @@ class BackendService {
 
   void _send(Map<String, dynamic> data) {
     try {
-      _channel?.sink.add(jsonEncode(data));
+      final payload = jsonEncode(data);
+      DebugLogger.instance.logRequest('WS', 'SEND', _wsUrl, payload);
+      _channel?.sink.add(payload);
     } catch (_) {}
   }
 
   void _onMessage(dynamic raw) {
     if (_disposed) return;
     try {
-      final msg = jsonDecode(raw as String) as Map<String, dynamic>;
+      DebugLogger.instance.logResponse('WS', _wsUrl, null, raw as String);
+      final msg = jsonDecode(raw) as Map<String, dynamic>;
       switch (msg['type'] as String?) {
         case 'generation_start':
           _events.add(BEGenerationStart(
