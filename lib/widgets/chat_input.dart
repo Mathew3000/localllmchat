@@ -321,10 +321,10 @@ class _ChatInputState extends State<ChatInput> {
                 ),
               ),
               const SizedBox(width: 8),
-              if (widget.promptTokens != null &&
-                  widget.contextWindowTokens != null) ...[
+              if (widget.contextWindowTokens != null) ...[
                 _ContextRing(
-                  promptTokens: widget.promptTokens!,
+                  // Show an empty ring from the start; fills as tokens accumulate.
+                  promptTokens: widget.promptTokens ?? 0,
                   contextWindowTokens: widget.contextWindowTokens!,
                 ),
                 const SizedBox(width: 6),

@@ -105,6 +105,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         backendToken: s.backendToken,
         backendAllowSelfSigned: s.backendAllowSelfSigned,
         backendAwayUrl: s.backendAwayUrl,
+        fileMcpEnabled: s.fileMcpEnabled,
       ),
     );
     if (mounted) {
