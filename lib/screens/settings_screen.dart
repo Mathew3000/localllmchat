@@ -376,6 +376,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
           const _SectionHeader(title: 'MCP Tools'),
           const _McpNavTile(),
+          const SizedBox(height: 8),
+          const _FileMcpTile(),
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Appearance'),
           _SettingsCard(
@@ -2292,6 +2294,48 @@ class _PasswordPromptDialogState extends State<_PasswordPromptDialog> {
           child: Text(widget.actionLabel),
         ),
       ],
+    );
+  }
+}
+
+// ── File MCP toggle tile ──────────────────────────────────────────────────────
+
+class _FileMcpTile extends StatelessWidget {
+  const _FileMcpTile();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Consumer<AppProvider>(
+      builder: (_, provider, __) {
+        final enabled = provider.settings.fileMcpEnabled;
+        return Card(
+          margin: EdgeInsets.zero,
+          child: SwitchListTile.adaptive(
+            secondary: Icon(
+              Icons.folder_open_outlined,
+              color: enabled ? cs.tertiary : cs.onSurfaceVariant,
+            ),
+            title: const Text('Local folder access'),
+            subtitle: Text(
+              enabled
+                  ? 'Folder picker shown in chat — select a folder to let the AI browse files.'
+                  : 'Enable to grant the AI access to a local folder via a picker in the chat input.',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: cs.onSurfaceVariant),
+            ),
+            value: enabled,
+            onChanged: (v) {
+              provider.updateSettings(
+                  provider.settings.copyWith(fileMcpEnabled: v));
+              // Clear any active folder when the feature is disabled.
+              if (!v) provider.setFileMcpFolder(null);
+            },
+          ),
+        );
+      },
     );
   }
 }

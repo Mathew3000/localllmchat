@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 
 // ── Attached image data class ─────────────────────────────────────────────────
 
@@ -33,6 +34,19 @@ class ChatInput extends StatefulWidget {
   final int? promptTokens;
   final int? contextWindowTokens;
 
+  // ── Built-in file MCP ────────────────────────────────────────────────────
+  /// When true a folder-picker button is shown next to the image button.
+  final bool fileMcpEnabled;
+
+  /// Currently selected folder path (null = no folder selected).
+  final String? fileMcpFolder;
+
+  /// Called when the user picks a folder; receives the absolute path.
+  final ValueChanged<String>? onPickFolder;
+
+  /// Called when the user taps the ✕ on the folder chip to clear the selection.
+  final VoidCallback? onClearFolder;
+
   const ChatInput({
     super.key,
     required this.isStreaming,
@@ -43,6 +57,10 @@ class ChatInput extends StatefulWidget {
     required this.onClearQueue,
     this.promptTokens,
     this.contextWindowTokens,
+    this.fileMcpEnabled = false,
+    this.fileMcpFolder,
+    this.onPickFolder,
+    this.onClearFolder,
   });
 
   @override
@@ -80,6 +98,20 @@ class _ChatInputState extends State<ChatInput> {
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  // ── Folder helpers ─────────────────────────────────────────────────────────
+
+  Future<void> _pickFolder() async {
+    // On Android, getDirectoryPath() returns a SAF URI string. On desktop it
+    // returns a real path. Either way we pass it through unchanged — Dart's
+    // Directory API handles both on their respective platforms.
+    final path = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Select folder for AI file access',
+    );
+    if (path != null && path.isNotEmpty) {
+      widget.onPickFolder?.call(path);
+    }
   }
 
   // ── Image helpers ──────────────────────────────────────────────────────────
@@ -143,6 +175,7 @@ class _ChatInputState extends State<ChatInput> {
     final cs = theme.colorScheme;
     final hasQueue = widget.messageQueue.isNotEmpty;
     final hasImages = _images.isNotEmpty;
+    final hasFolder = widget.fileMcpFolder != null;
     final canSend = _hasText || hasImages;
 
     return Container(
@@ -170,6 +203,20 @@ class _ChatInputState extends State<ChatInput> {
                     queue: widget.messageQueue,
                     onRemove: widget.onRemoveFromQueue,
                     onClear: widget.onClearQueue,
+                  )
+                : const SizedBox.shrink(),
+          ),
+
+          // ── Folder chip (file MCP) ─────────────────────────────────────────
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+            child: hasFolder
+                ? _FolderChip(
+                    path: widget.fileMcpFolder!,
+                    cs: cs,
+                    theme: theme,
+                    onClear: widget.onClearFolder,
                   )
                 : const SizedBox.shrink(),
           ),
@@ -207,6 +254,24 @@ class _ChatInputState extends State<ChatInput> {
                   ),
                 ),
               ),
+              // Folder picker button (file MCP)
+              if (widget.fileMcpEnabled)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Tooltip(
+                    message: hasFolder ? 'Change folder' : 'Select folder for AI',
+                    child: IconButton(
+                      onPressed: _pickFolder,
+                      icon: Icon(
+                        Icons.folder_open_outlined,
+                        color: hasFolder
+                            ? cs.tertiary
+                            : cs.onSurfaceVariant.withValues(alpha: 0.7),
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                ),
               // Text field
               Expanded(
                 child: Container(
@@ -271,6 +336,81 @@ class _ChatInputState extends State<ChatInput> {
                 onCancel: widget.onCancel,
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Folder chip ───────────────────────────────────────────────────────────────
+
+class _FolderChip extends StatelessWidget {
+  final String path;
+  final ColorScheme cs;
+  final ThemeData theme;
+  final VoidCallback? onClear;
+
+  const _FolderChip({
+    required this.path,
+    required this.cs,
+    required this.theme,
+    this.onClear,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Show only the last path component so the chip stays compact.
+    final label = p.basename(path).isEmpty ? path : p.basename(path);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          Icon(Icons.folder_rounded, size: 14, color: cs.tertiary),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: cs.tertiaryContainer.withValues(alpha: 0.6),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                    color: cs.tertiary.withValues(alpha: 0.35)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: cs.onTertiaryContainer,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: onClear,
+                    child: Icon(
+                      Icons.close_rounded,
+                      size: 13,
+                      color: cs.onTertiaryContainer.withValues(alpha: 0.7),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            'folder accessible to AI',
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: cs.onSurfaceVariant),
           ),
         ],
       ),

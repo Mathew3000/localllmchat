@@ -15,6 +15,7 @@ import '../models/tool_call.dart';
 import '../services/api_service.dart';
 import '../services/backend_service.dart';
 import '../services/base_mcp_service.dart';
+import '../services/file_mcp_service.dart';
 import '../services/mcp_service.dart';
 import '../services/mcp_sse_service.dart';
 import '../services/storage_service.dart';
@@ -98,6 +99,14 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Runtime override — lets the user toggle tools on/off without touching settings.
   bool _mcpActive = true;
+
+  // ── Built-in file MCP ─────────────────────────────────────────────────────
+
+  /// Sentinel server-id for the built-in filesystem MCP service.
+  static const _kFileMcpId = '__builtin_files__';
+
+  /// Currently selected folder path (session-only, never persisted).
+  String? _fileMcpFolder;
 
   // ── Memory pre-fetch cache ────────────────────────────────────────────────
   String? _cachedMemoryContext;
@@ -193,6 +202,37 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   void toggleMcp() {
     _mcpActive = !_mcpActive;
+    notifyListeners();
+  }
+
+  // ── Built-in file MCP getters ─────────────────────────────────────────────
+
+  bool get fileMcpEnabled => _settings.fileMcpEnabled;
+  String? get fileMcpFolder => _fileMcpFolder;
+
+  /// Sets (or clears) the active folder for the built-in file MCP service.
+  ///
+  /// When [path] is non-null a [FileMcpService] is created and its tools are
+  /// registered in the same maps used by network MCP servers, so both the
+  /// direct agentic loop and the backend relay path pick them up automatically.
+  ///
+  /// When [path] is null (or the folder was just cleared) the service is
+  /// removed and the tools become unavailable to the LLM.
+  void setFileMcpFolder(String? path) {
+    // Tear down any existing built-in service.
+    _mcpServiceCache.remove(_kFileMcpId)?.dispose();
+    _mcpToolsByServer.remove(_kFileMcpId);
+    _mcpErrorByServer.remove(_kFileMcpId);
+
+    _fileMcpFolder = path;
+
+    if (path != null && path.isNotEmpty) {
+      final svc = FileMcpService(path);
+      _mcpServiceCache[_kFileMcpId] = svc;
+      _mcpToolsByServer[_kFileMcpId] = FileMcpService.toolDefs;
+    }
+
+    _rebuildToolServiceMap();
     notifyListeners();
   }
 
@@ -1284,9 +1324,11 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     _streamingBackendConvId = conv.id;
     notifyListeners();
 
-    // Collect tool schemas from localOnly servers so the backend can include
-    // them in the LLM request.  The actual tool execution is relayed back to
-    // the client via the WebSocket (BEToolCall → _executeRelayedToolCall).
+    // Collect tool schemas for client-relay:
+    //  • servers with localOnly=true (from MCP Servers config)
+    //  • the built-in file MCP when a folder is selected
+    // The actual tool execution is relayed via WebSocket BEToolCall →
+    // _executeRelayedToolCall.
     final List<Map<String, dynamic>> localOnlyTools = [];
     if (_mcpActive) {
       for (final server in _settings.mcpServers) {
@@ -1294,6 +1336,10 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         for (final tool in (_mcpToolsByServer[server.id] ?? [])) {
           localOnlyTools.add(tool.toOpenAiTool());
         }
+      }
+      // Built-in file MCP (session folder, if selected).
+      for (final tool in (_mcpToolsByServer[_kFileMcpId] ?? [])) {
+        localOnlyTools.add(tool.toOpenAiTool());
       }
     }
 

@@ -89,6 +89,13 @@ class AppSettings {
   /// when [backendUrl] (home) is unreachable.  Device-local — excluded from sync.
   final String backendAwayUrl;
 
+  // ── Built-in file MCP ──────────────────────────────────────────────────────
+  /// When true, a folder-picker button is shown in the chat input.
+  /// Once the user selects a folder, a built-in filesystem MCP service is
+  /// activated and the LLM can browse/read files inside that folder.
+  /// The selected folder itself is session-only (not persisted).
+  final bool fileMcpEnabled;
+
   const AppSettings({
     this.baseUrlHome = 'http://192.168.1.1:5000/v1',
     this.baseUrlAway = '',
@@ -123,6 +130,7 @@ class AppSettings {
     this.backendToken = '',
     this.backendAllowSelfSigned = false,
     this.backendAwayUrl = '',
+    this.fileMcpEnabled = false,
   });
 
   /// The URL that is currently active based on [useAwayUrl].
@@ -168,6 +176,7 @@ class AppSettings {
     String? backendToken,
     bool? backendAllowSelfSigned,
     String? backendAwayUrl,
+    bool? fileMcpEnabled,
   }) =>
       AppSettings(
         baseUrlHome: baseUrlHome ?? this.baseUrlHome,
@@ -213,6 +222,7 @@ class AppSettings {
         backendAllowSelfSigned:
             backendAllowSelfSigned ?? this.backendAllowSelfSigned,
         backendAwayUrl: backendAwayUrl ?? this.backendAwayUrl,
+        fileMcpEnabled: fileMcpEnabled ?? this.fileMcpEnabled,
       );
 
   Map<String, dynamic> toJson() => {
@@ -248,6 +258,7 @@ class AppSettings {
         'backendToken': backendToken,
         'backendAllowSelfSigned': backendAllowSelfSigned,
         'backendAwayUrl': backendAwayUrl,
+        'fileMcpEnabled': fileMcpEnabled,
       };
 
   /// Settings JSON for the sync payload — excludes device-specific credentials
@@ -268,6 +279,8 @@ class AppSettings {
     j.remove('backendToken');
     j.remove('backendAllowSelfSigned');
     j.remove('backendAwayUrl');
+    // File MCP enabled flag is device-local (folder paths differ per device).
+    j.remove('fileMcpEnabled');
     return j;
   }
 
@@ -326,6 +339,7 @@ class AppSettings {
       backendAllowSelfSigned:
           json['backendAllowSelfSigned'] as bool? ?? false,
       backendAwayUrl: json['backendAwayUrl'] as String? ?? '',
+      fileMcpEnabled: json['fileMcpEnabled'] as bool? ?? false,
     );
   }
 }
