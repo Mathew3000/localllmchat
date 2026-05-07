@@ -500,6 +500,8 @@ async def run_generation(
             final_content = "".join(content_buf)
             assistant_msg.content = final_content
             conv.updated_at = datetime.now(timezone.utc)
+            if usage_data and (pt := usage_data.get("prompt_tokens")):
+                conv.last_prompt_tokens = pt
             await db.commit()
 
             complete_payload: dict = {
@@ -523,6 +525,8 @@ async def run_generation(
         if assistant_msg is not None:
             assistant_msg.content = final_content
             conv.updated_at = datetime.now(timezone.utc)
+            if usage_data and (pt := usage_data.get("prompt_tokens")):
+                conv.last_prompt_tokens = pt
             await db.commit()
         max_iter_payload: dict = {
             "type": "message_complete",

@@ -12,6 +12,9 @@ class Conversation {
   int? userBubbleColor;
   /// Bubble colour for assistant messages (ARGB int). Null = theme default.
   int? assistantBubbleColor;
+  /// Last known prompt-token count for this conversation.  Persisted so the
+  /// context-usage ring survives restarts and syncs across devices.
+  int? lastPromptTokens;
 
   Conversation({
     String? id,
@@ -22,6 +25,7 @@ class Conversation {
     this.isSecret = false,
     this.userBubbleColor,
     this.assistantBubbleColor,
+    this.lastPromptTokens,
   })  : id = id ?? const Uuid().v4(),
         title = title ?? 'New Chat',
         messages = messages ?? [],
@@ -37,6 +41,7 @@ class Conversation {
         'isSecret': isSecret,
         'userBubbleColor': userBubbleColor,
         'assistantBubbleColor': assistantBubbleColor,
+        'lastPromptTokens': lastPromptTokens,
       };
 
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
@@ -50,6 +55,7 @@ class Conversation {
         isSecret: json['isSecret'] as bool? ?? false,
         userBubbleColor: json['userBubbleColor'] as int?,
         assistantBubbleColor: json['assistantBubbleColor'] as int?,
+        lastPromptTokens: json['lastPromptTokens'] as int?,
       );
 
   String get preview {

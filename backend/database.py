@@ -17,6 +17,7 @@ _MIGRATIONS = [
     "ALTER TABLE conversations ADD COLUMN is_secret BOOLEAN NOT NULL DEFAULT 0",
     "ALTER TABLE conversations ADD COLUMN user_bubble_color INTEGER",
     "ALTER TABLE conversations ADD COLUMN assistant_bubble_color INTEGER",
+    "ALTER TABLE conversations ADD COLUMN last_prompt_tokens INTEGER",
     "ALTER TABLE users ADD COLUMN totp_secret TEXT",
     "ALTER TABLE users ADD COLUMN totp_enabled BOOLEAN NOT NULL DEFAULT 0",
 ]

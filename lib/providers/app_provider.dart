@@ -137,9 +137,14 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get mcpActive => _mcpActive;
 
   /// Prompt tokens used in the active conversation (null = not yet known).
-  int? get activePromptTokens => _activeConversation != null
-      ? _promptTokens[_activeConversation!.id]
-      : null;
+  /// Prefers the in-memory value (updated immediately after each response);
+  /// falls back to the persisted value on the Conversation so the ring is
+  /// non-zero immediately after a restart or cross-device sync.
+  int? get activePromptTokens {
+    if (_activeConversation == null) return null;
+    return _promptTokens[_activeConversation!.id]
+        ?? _activeConversation!.lastPromptTokens;
+  }
 
   /// Completion tokens from the last turn in the active conversation.
   int? get activeCompletionTokens => _activeConversation != null
@@ -1401,6 +1406,14 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (pt != null) {
             _promptTokens[cid] = pt;
             _completionTokens[cid] = ct ?? 0;
+            // Persist on the local Conversation object so the ring survives
+            // reconnects.  The backend DB is the authoritative store in
+            // backend mode, but updating local state keeps things responsive.
+            final conv = _conversations.firstWhere(
+              (c) => c.id == cid,
+              orElse: () => throw StateError('conv not found'),
+            );
+            conv.lastPromptTokens = pt;
           }
           final completedConvId = _streamingBackendConvId;
           _streamingBackendConvId = null;
@@ -1582,6 +1595,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         onUsage: (prompt, completion) {
           _promptTokens[convId] = prompt;
           _completionTokens[convId] = completion;
+          conv.lastPromptTokens = prompt;
+          _persistConversations();
         },
       ).listen(
         (chunk) {
@@ -1661,6 +1676,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           _promptTokens[_activeConversation!.id] = resp.promptTokens!;
           _completionTokens[_activeConversation!.id] =
               resp.completionTokens ?? 0;
+          _activeConversation!.lastPromptTokens = resp.promptTokens;
+          _persistConversations();
         }
 
         if (resp.hasToolCalls) {

@@ -759,6 +759,7 @@ class BackendService {
       isSecret: j['is_secret'] as bool? ?? false,
       userBubbleColor: j['user_bubble_color'] as int?,
       assistantBubbleColor: j['assistant_bubble_color'] as int?,
+      lastPromptTokens: j['last_prompt_tokens'] as int?,
     );
   }
 

@@ -96,6 +96,8 @@ async def update_conversation(
         conv.user_bubble_color = req.user_bubble_color
     if req.assistant_bubble_color is not None or "assistant_bubble_color" in req.model_fields_set:
         conv.assistant_bubble_color = req.assistant_bubble_color
+    if req.last_prompt_tokens is not None or "last_prompt_tokens" in req.model_fields_set:
+        conv.last_prompt_tokens = req.last_prompt_tokens
     conv.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return conv

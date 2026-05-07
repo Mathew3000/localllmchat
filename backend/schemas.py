@@ -64,6 +64,7 @@ class ConversationSummary(BaseModel):
     is_secret: bool = False
     user_bubble_color: int | None = None
     assistant_bubble_color: int | None = None
+    last_prompt_tokens: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -92,6 +93,7 @@ class UpdateConversationRequest(BaseModel):
     is_secret: bool | None = None
     user_bubble_color: int | None = None
     assistant_bubble_color: int | None = None
+    last_prompt_tokens: int | None = None
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
