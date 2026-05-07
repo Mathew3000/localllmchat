@@ -33,6 +33,21 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# ── Ensure ANDROID_HOME is visible in this process ────────────────────────────
+# User-level env vars set after the terminal opened won't be inherited yet.
+# Read them directly from the registry as a fallback.
+if (-not $env:ANDROID_HOME) {
+    $userEnv = [Environment]::GetEnvironmentVariable("ANDROID_HOME", "User")
+    if ($userEnv) {
+        $env:ANDROID_HOME     = $userEnv
+        $env:ANDROID_SDK_ROOT = $userEnv
+        $platformTools = Join-Path $userEnv 'platform-tools'
+        if ((Test-Path $platformTools) -and $env:PATH -notlike "*platform-tools*") {
+            $env:PATH += ";$platformTools"
+        }
+    }
+}
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 function Write-Step([string]$msg) {
