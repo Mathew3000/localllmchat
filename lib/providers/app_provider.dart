@@ -1222,9 +1222,14 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   void deleteConversation(String id) {
     _conversations.removeWhere((c) => c.id == id);
     if (_activeConversation?.id == id) {
-      _activeConversation = visibleConversations.isNotEmpty
-          ? visibleConversations.first
-          : null;
+      final next =
+          visibleConversations.isNotEmpty ? visibleConversations.first : null;
+      // Use selectConversation so backend mode triggers lazy message loading.
+      if (next != null) {
+        selectConversation(next);
+      } else {
+        _activeConversation = null;
+      }
     }
     if (_settings.useBackend && _backend != null) {
       _backend!.deleteConversation(id).catchError((_) {});
