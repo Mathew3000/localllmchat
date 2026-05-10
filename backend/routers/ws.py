@@ -148,7 +148,7 @@ async def websocket_endpoint(
                         hub.unregister_task(cid)
 
                 task = asyncio.create_task(_generate())
-                hub.register_task(conv_id, task)
+                hub.register_task(conv_id, task, user.id)
 
             # ── Tool result from client (MCP relay) ───────────────────────────
             elif msg_type == "tool_result":

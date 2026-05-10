@@ -23,12 +23,27 @@ class ConnectionManager:
         self._tasks: dict[str, asyncio.Task] = {}
         # "conv_id:call_id" -> asyncio.Future[dict]  (tool-result relay)
         self._tool_futures: dict[str, "asyncio.Future[dict]"] = {}
+        # conversation_id -> user_id (for generation_start replay on reconnect)
+        self._conv_user: dict[str, str] = {}
 
     # ── Connection lifecycle ──────────────────────────────────────────────────
 
     async def connect(self, user_id: str, ws: WebSocket) -> None:
         await ws.accept()
         self._connections[user_id].add(ws)
+        # Replay generation_start for every in-progress generation belonging to
+        # this user so that reconnecting clients and second devices can pick up
+        # live streams without missing the original event.
+        for conv_id, uid in list(self._conv_user.items()):
+            if uid == user_id and self.is_generating(conv_id):
+                try:
+                    await ws.send_json({
+                        "type": "generation_start",
+                        "conversation_id": conv_id,
+                        "message_id": "",   # client infers placeholder from messages
+                    })
+                except Exception:
+                    pass
 
     def disconnect(self, user_id: str, ws: WebSocket) -> None:
         self._connections[user_id].discard(ws)
@@ -47,11 +62,16 @@ class ConnectionManager:
 
     # ── Generation task lifecycle ─────────────────────────────────────────────
 
-    def register_task(self, conversation_id: str, task: asyncio.Task) -> None:
+    def register_task(
+        self, conversation_id: str, task: asyncio.Task, user_id: str = ""
+    ) -> None:
         self._tasks[conversation_id] = task
+        if user_id:
+            self._conv_user[conversation_id] = user_id
 
     def unregister_task(self, conversation_id: str) -> None:
         self._tasks.pop(conversation_id, None)
+        self._conv_user.pop(conversation_id, None)
 
     def cancel_task(self, conversation_id: str) -> None:
         task = self._tasks.pop(conversation_id, None)

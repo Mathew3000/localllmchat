@@ -55,6 +55,14 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _backendConnecting = false;
   String? _backendConnectError;
   bool _backendUsingAway = false;
+  /// Tokens that arrived before the local streaming placeholder was ready
+  /// (e.g. reconnect or cross-device — generation_start comes before messages
+  /// are loaded from the REST API).  Flushed into the placeholder as soon as
+  /// it is created.
+  final Map<String, StringBuffer> _pendingTokens = {};
+  /// Maps call_id → the local tool-result Message for server-side tool calls.
+  /// Used to fill in the result bubble when the backend sends a tool_result event.
+  final Map<String, Message> _serverToolMsgs = {};
 
   // ── Message queue ─────────────────────────────────────────────────────────
   /// Messages waiting to be sent once the current run finishes.
@@ -912,10 +920,13 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         allowSelfSigned: _settings.backendAllowSelfSigned,
       );
 
-      await _backend!.connect();
-
+      // Register the event listener BEFORE opening the WebSocket so that the
+      // generation_start replay the backend sends immediately on connect is
+      // never dropped.  (Broadcast streams discard events with no listeners.)
       _backendEventSub?.cancel();
       _backendEventSub = _backend!.events.listen(_handleBackendEvent);
+
+      await _backend!.connect();
 
       // Pull server-side settings and merge into local settings so the app
       // reflects whatever was last saved (e.g. LLM URL, model, system prompt).
@@ -948,10 +959,27 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       _conversations = convs;
       final visibleConvs = convs.where((c) => !c.isSecret).toList();
       _activeConversation = visibleConvs.isNotEmpty ? visibleConvs.first : null;
+
+      // If the backend reports an in-progress generation (is_generating flag)
+      // and we haven't already been notified via a generation_start event,
+      // prime the streaming state now so tokens arriving later are handled.
+      final generatingConv =
+          convs.where((c) => c.isGenerating).firstOrNull;
+      if (generatingConv != null && _streamingBackendConvId == null) {
+        _streamingBackendConvId = generatingConv.id;
+        _isStreaming = true;
+      }
+
       // Pre-load messages for the initially active conversation so the user
       // sees content immediately without having to tap it first.
       if (_activeConversation != null) {
         _loadConversationMessages(_activeConversation!.id);
+      }
+      // Also pre-load the generating conversation if it is different from the
+      // active one so the streaming placeholder is set up immediately.
+      if (_streamingBackendConvId != null &&
+          _streamingBackendConvId != _activeConversation?.id) {
+        _loadConversationMessages(_streamingBackendConvId!);
       }
       // In backend mode the server handles most MCP servers directly.
       // However, servers marked localOnly run on the client's local network
@@ -975,6 +1003,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     _backend = null;
     _streamingBackendMsg = null;
     _streamingBackendConvId = null;
+    _serverToolMsgs.clear();
+    _pendingTokens.clear();
   }
 
   /// Reconnects to the backend using the stored token (no re-authentication).
@@ -1123,9 +1153,18 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   void selectConversation(Conversation conv) {
     _activeConversation = conv;
     notifyListeners();
-    // In backend mode, lazy-load messages if not yet fetched.
-    if (_settings.useBackend && conv.messages.isEmpty && _backend != null) {
-      _loadConversationMessages(conv.id);
+    if (_settings.useBackend && _backend != null) {
+      if (conv.messages.isEmpty) {
+        // Lazy-load messages from the backend.
+        _loadConversationMessages(conv.id);
+      } else if (conv.id == _streamingBackendConvId &&
+          _streamingBackendMsg == null) {
+        // Messages already loaded but the streaming placeholder isn't set up
+        // yet (e.g. user taps the generating conv before _loadConversationMessages
+        // completes on another code path).
+        _setupStreamingPlaceholder(conv);
+        notifyListeners();
+      }
     }
   }
 
@@ -1135,6 +1174,13 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       final idx = _conversations.indexWhere((c) => c.id == convId);
       if (idx >= 0) _conversations[idx] = full;
       if (_activeConversation?.id == convId) _activeConversation = full;
+      // If this is the conversation currently being generated and the local
+      // streaming placeholder hasn't been set up yet, do it now using the
+      // freshly-loaded message list (which includes the DB placeholder that
+      // llm.py commits before it starts streaming tokens).
+      if (convId == _streamingBackendConvId && _streamingBackendMsg == null) {
+        _setupStreamingPlaceholder(full);
+      }
       notifyListeners();
     } catch (e) {
       _error = 'Failed to load messages: $e';
@@ -1396,8 +1442,12 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
             content: final text,
           ):
         if (cid == _streamingBackendConvId && _streamingBackendMsg != null) {
+          // Normal fast path: placeholder is ready, append immediately.
           _streamingBackendMsg!.content += text;
           notifyListeners();
+        } else if (cid == _streamingBackendConvId) {
+          // Placeholder not ready yet (messages still loading) — buffer.
+          (_pendingTokens[cid] ??= StringBuffer()).write(text);
         }
 
       case BEMessageComplete(
@@ -1406,6 +1456,9 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           completionTokens: final ct,
         ):
         if (cid == _streamingBackendConvId) {
+          // Discard any buffered tokens — generation is complete and the
+          // canonical content will be loaded from the DB via _loadThenAutoTitle.
+          _pendingTokens.remove(cid);
           _streamingBackendMsg?.isStreaming = false;
           _streamingBackendMsg = null;
           if (pt != null) {
@@ -1434,6 +1487,12 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       case BEError(conversationId: final cid, detail: final detail):
         if (cid == _streamingBackendConvId || cid == null) {
+          _pendingTokens.remove(cid ?? _streamingBackendConvId);
+          // Finalize any pending server-side tool placeholders.
+          for (final msg in _serverToolMsgs.values) {
+            msg.isStreaming = false;
+          }
+          _serverToolMsgs.clear();
           if (_streamingBackendMsg != null) {
             _streamingBackendMsg!.isStreaming = false;
             if (_streamingBackendMsg!.content.isEmpty) {
@@ -1451,6 +1510,11 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       case BECancelled(conversationId: final cid):
         if (cid == _streamingBackendConvId) {
+          _pendingTokens.remove(cid);
+          for (final msg in _serverToolMsgs.values) {
+            msg.isStreaming = false;
+          }
+          _serverToolMsgs.clear();
           _streamingBackendMsg?.isStreaming = false;
           _streamingBackendMsg = null;
           _streamingBackendConvId = null;
@@ -1460,21 +1524,33 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
 
       case BEGenerationStart(conversationId: final cid):
-        // Initial generation_start: the placeholder was already created in
-        // _runBackendGeneration(), so nothing to do.
-        // Subsequent generation_start (after tool calls): the previous
-        // _streamingBackendMsg was finalized by BEToolCall; create a new
-        // placeholder for the continuation response.
         if (cid == _streamingBackendConvId && _streamingBackendMsg == null) {
-          final newMsg = Message(
-            role: Role.assistant,
-            content: '',
-            isStreaming: true,
-          );
-          // Always append to the owning conversation, not the currently
-          // visible one — the user may have switched chats mid-generation.
-          _conversationById(cid)?.messages.add(newMsg);
-          _streamingBackendMsg = newMsg;
+          // Continuation after a tool call: the previous _streamingBackendMsg
+          // was finalized by BEToolCall; create a new placeholder.
+          // Also handles the reconnect/cross-device case when
+          // _streamingBackendConvId was already set by the is_generating flag
+          // from fetchConversations() but messages aren't loaded yet.
+          final conv = _conversationById(cid);
+          if (conv != null) {
+            _setupStreamingPlaceholder(conv);
+          }
+          // If conv not found yet, _setupStreamingPlaceholder will be called
+          // from _loadConversationMessages once messages arrive.
+          notifyListeners();
+        } else if (_streamingBackendConvId == null) {
+          // Generation started on another device (cross-device), or a reconnect
+          // replay arrived before fetchConversations() set the flag.
+          _streamingBackendConvId = cid;
+          _isStreaming = true;
+          final conv = _conversationById(cid);
+          if (conv != null) {
+            // Messages already loaded — set up placeholder immediately.
+            _setupStreamingPlaceholder(conv);
+          } else {
+            // Messages not yet loaded; trigger a load.  _setupStreamingPlaceholder
+            // will be called from _loadConversationMessages when it completes.
+            unawaited(_loadConversationMessages(cid));
+          }
           notifyListeners();
         }
 
@@ -1483,6 +1559,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
             callId: final callId,
             name: final toolName,
             arguments: final argsJson,
+            serverSide: final serverSide,
           ):
         if (cid == _streamingBackendConvId) {
           // Finalize the current streaming message (may contain thinking content).
@@ -1515,8 +1592,27 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           conv?.messages.add(toolMsg);
           notifyListeners();
 
-          // Execute asynchronously and relay result back to backend.
-          _executeRelayedToolCall(cid, callId, toolName, argsJson, toolMsg);
+          if (serverSide) {
+            // Backend executes the tool itself — store the placeholder so
+            // BEToolResult can fill it in when the result arrives.
+            _serverToolMsgs[callId] = toolMsg;
+          } else {
+            // Client-relay mode: execute locally and send the result back.
+            _executeRelayedToolCall(cid, callId, toolName, argsJson, toolMsg);
+          }
+        }
+
+      case BEToolResult(
+            conversationId: _,
+            callId: final callId,
+            content: final content,
+          ):
+        // Backend finished executing a server-side tool — fill in the placeholder.
+        final toolMsg = _serverToolMsgs.remove(callId);
+        if (toolMsg != null) {
+          toolMsg.content = content;
+          toolMsg.isStreaming = false;
+          notifyListeners();
         }
     }
   }
@@ -1528,6 +1624,44 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (c.id == id) return c;
     }
     return null;
+  }
+
+  /// Creates (or reuses) the streaming assistant placeholder for [conv] and
+  /// assigns it to [_streamingBackendMsg].
+  ///
+  /// Tries to reuse an existing empty assistant message at the tail of the
+  /// message list — this is the DB placeholder that [llm.py] commits before
+  /// it begins streaming.  Falls back to creating a fresh in-memory message
+  /// so the UI shows a typing indicator immediately.
+  ///
+  /// After setting [_streamingBackendMsg], any tokens that buffered while we
+  /// were waiting are flushed into the placeholder.
+  void _setupStreamingPlaceholder(Conversation conv) {
+    if (_streamingBackendMsg != null) return; // already wired up
+    final msgs = conv.messages;
+    Message placeholder;
+    if (msgs.isNotEmpty &&
+        msgs.last.role == Role.assistant &&
+        msgs.last.content.isEmpty &&
+        !msgs.last.isStreaming) {
+      // Reuse the DB placeholder committed by llm.py before streaming began.
+      placeholder = msgs.last;
+      placeholder.isStreaming = true;
+    } else {
+      placeholder = Message(role: Role.assistant, content: '', isStreaming: true);
+      msgs.add(placeholder);
+    }
+    _streamingBackendMsg = placeholder;
+    _flushTokenBuffer(conv.id);
+  }
+
+  /// Applies any tokens that arrived before [_streamingBackendMsg] was ready
+  /// and clears the buffer entry for [convId].
+  void _flushTokenBuffer(String convId) {
+    final buf = _pendingTokens.remove(convId);
+    if (buf != null && buf.isNotEmpty && _streamingBackendMsg != null) {
+      _streamingBackendMsg!.content += buf.toString();
+    }
   }
 
   /// Executes an MCP tool requested by the backend and sends the result back.
@@ -1782,6 +1916,10 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         msgs.last.isStreaming = false;
       }
     }
+    for (final msg in _serverToolMsgs.values) {
+      msg.isStreaming = false;
+    }
+    _serverToolMsgs.clear();
     _streamingBackendMsg = null;
     _streamingBackendConvId = null;
     _isStreaming = false;

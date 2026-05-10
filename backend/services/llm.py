@@ -401,10 +401,27 @@ async def run_generation(
                     # Execute all tool calls directly against the MCP servers.
                     # No round-trip to the Flutter client — works when client
                     # is away from home and can't reach the MCP servers.
+                    # We notify the client via tool_call / tool_result events so
+                    # the UI shows spinners and results in real time rather than
+                    # only after the full generation completes.
                     for tc in tool_calls_list:
                         tc_name: str = tc["function"]["name"]
+                        tc_args_str: str = tc["function"]["arguments"]
+
+                        # Notify client: tool execution starting.
+                        # server_side=True tells the Flutter client not to relay.
+                        await _send({
+                            "type": "tool_call",
+                            "conversation_id": conversation_id,
+                            "message_id": assistant_msg.id,
+                            "call_id": tc["id"],
+                            "name": tc_name,
+                            "arguments": tc_args_str,
+                            "server_side": True,
+                        })
+
                         try:
-                            tc_args: dict = json.loads(tc["function"]["arguments"])
+                            tc_args: dict = json.loads(tc_args_str)
                         except (json.JSONDecodeError, TypeError):
                             tc_args = {}
                         mcp_client = mcp_tool_clients.get(tc_name)
@@ -422,6 +439,7 @@ async def run_generation(
                                 raise
                             except Exception as e:
                                 result_content = f"Tool error: {e}"
+
                         db.add(Message(
                             id=str(uuid.uuid4()),
                             conversation_id=conversation_id,
@@ -430,6 +448,15 @@ async def run_generation(
                             content=result_content,
                             created_at=datetime.now(timezone.utc),
                         ))
+
+                        # Notify client: tool execution complete.
+                        await _send({
+                            "type": "tool_result",
+                            "conversation_id": conversation_id,
+                            "call_id": tc["id"],
+                            "content": result_content,
+                        })
+
                     await db.commit()
 
                 else:

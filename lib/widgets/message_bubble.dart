@@ -318,6 +318,7 @@ class MessageBubble extends StatelessWidget {
         text: message.content,
         theme: adaptedTheme,
         highlightColor: highlightColor,
+        softLineBreak: true,
       ),
     );
 
@@ -539,11 +540,16 @@ class _MarkdownContent extends StatelessWidget {
   final ThemeData theme;
   /// Highlight background colour. Null = amber (#FFD000).
   final Color? highlightColor;
+  /// When true, single newlines are rendered as hard line breaks instead of
+  /// being collapsed into spaces (CommonMark default).  Use for user messages
+  /// so typed line breaks are preserved visually.
+  final bool softLineBreak;
 
   const _MarkdownContent({
     required this.text,
     required this.theme,
     this.highlightColor,
+    this.softLineBreak = false,
   });
 
   /// Convert <mark>…</mark> HTML tags to ==…== so _MarkSyntax can handle them.
@@ -556,6 +562,7 @@ class _MarkdownContent extends StatelessWidget {
     return MarkdownBody(
       data: data,
       selectable: true,
+      softLineBreak: softLineBreak,
       inlineSyntaxes: [_MarkSyntax()],
       builders: {
         'mark': _MarkBuilder(bg: highlightBg, fg: highlightFg),

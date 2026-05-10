@@ -65,6 +65,10 @@ class ConversationSummary(BaseModel):
     user_bubble_color: int | None = None
     assistant_bubble_color: int | None = None
     last_prompt_tokens: int | None = None
+    # Runtime flag injected by the conversations router — True while the backend
+    # LLM task is actively streaming a response for this conversation.
+    # Never stored in the DB; always False when read from DB directly.
+    is_generating: bool = False
     created_at: datetime
     updated_at: datetime
 

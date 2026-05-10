@@ -65,12 +65,29 @@ class BEToolCall extends BackendEvent {
   final String name;
   /// Raw JSON string of the tool arguments.
   final String arguments;
+  /// True when the backend executes the tool itself (no client relay needed).
+  final bool serverSide;
   const BEToolCall({
     required this.conversationId,
     required this.messageId,
     required this.callId,
     required this.name,
     required this.arguments,
+    this.serverSide = false,
+  });
+}
+
+/// Sent by the backend after it completes a server-side tool execution.
+/// The Flutter client uses this to fill in the tool-result bubble that was
+/// created when the corresponding [BEToolCall] arrived.
+class BEToolResult extends BackendEvent {
+  final String conversationId;
+  final String callId;
+  final String content;
+  const BEToolResult({
+    required this.conversationId,
+    required this.callId,
+    required this.content,
   });
 }
 
@@ -354,6 +371,13 @@ class BackendService {
             callId: msg['call_id'] as String,
             name: msg['name'] as String,
             arguments: msg['arguments'] as String? ?? '{}',
+            serverSide: msg['server_side'] as bool? ?? false,
+          ));
+        case 'tool_result':
+          _events.add(BEToolResult(
+            conversationId: msg['conversation_id'] as String,
+            callId: msg['call_id'] as String,
+            content: msg['content'] as String? ?? '',
           ));
         case 'pong':
           break; // ignore keepalive replies
@@ -760,6 +784,7 @@ class BackendService {
       userBubbleColor: j['user_bubble_color'] as int?,
       assistantBubbleColor: j['assistant_bubble_color'] as int?,
       lastPromptTokens: j['last_prompt_tokens'] as int?,
+      isGenerating: j['is_generating'] as bool? ?? false,
     );
   }
 

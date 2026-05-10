@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependencies import get_current_user, get_db
 from models import Conversation, Message, User, UserSettings
+from services.ws_hub import hub
 from schemas import (
     ConversationDetail,
     ConversationSummary,
@@ -40,7 +41,24 @@ async def list_conversations(
         .where(Conversation.user_id == user.id)
         .order_by(Conversation.updated_at.desc())
     )
-    return result.scalars().all()
+    convs = result.scalars().all()
+    # Inject the runtime is_generating flag from the hub so clients can detect
+    # in-progress streams when they first connect (e.g. after a restart or on a
+    # second device).  The flag is never stored in the DB.
+    return [
+        {
+            "id": c.id,
+            "title": c.title,
+            "is_secret": c.is_secret,
+            "user_bubble_color": c.user_bubble_color,
+            "assistant_bubble_color": c.assistant_bubble_color,
+            "last_prompt_tokens": c.last_prompt_tokens,
+            "is_generating": hub.is_generating(c.id),
+            "created_at": c.created_at,
+            "updated_at": c.updated_at,
+        }
+        for c in convs
+    ]
 
 
 @router.post("", response_model=ConversationSummary, status_code=201)

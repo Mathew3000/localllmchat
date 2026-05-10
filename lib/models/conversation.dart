@@ -15,6 +15,9 @@ class Conversation {
   /// Last known prompt-token count for this conversation.  Persisted so the
   /// context-usage ring survives restarts and syncs across devices.
   int? lastPromptTokens;
+  /// Transient: true when the backend reports that a generation is actively
+  /// in progress for this conversation.  Never stored locally.
+  bool isGenerating;
 
   Conversation({
     String? id,
@@ -26,6 +29,7 @@ class Conversation {
     this.userBubbleColor,
     this.assistantBubbleColor,
     this.lastPromptTokens,
+    this.isGenerating = false,
   })  : id = id ?? const Uuid().v4(),
         title = title ?? 'New Chat',
         messages = messages ?? [],
