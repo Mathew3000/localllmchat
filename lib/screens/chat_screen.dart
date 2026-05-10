@@ -25,8 +25,31 @@ class _ChatScreenState extends State<ChatScreen> {
   // Only used on mobile (drawer trigger).
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
+  String? _lastActiveConvId;
+
+  @override
+  void initState() {
+    super.initState();
+    // Schedule listener setup after the first frame so the provider is
+    // available via context.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final p = context.read<AppProvider>();
+      _lastActiveConvId = p.activeConversation?.id;
+      p.addListener(_onProviderChanged);
+    });
+  }
+
+  void _onProviderChanged() {
+    final convId = context.read<AppProvider>().activeConversation?.id;
+    if (convId != null && convId != _lastActiveConvId) {
+      _lastActiveConvId = convId;
+      _scrollToBottom(animated: false);
+    }
+  }
+
   @override
   void dispose() {
+    context.read<AppProvider>().removeListener(_onProviderChanged);
     _scrollController.dispose();
     super.dispose();
   }
