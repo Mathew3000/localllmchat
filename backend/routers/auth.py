@@ -8,7 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth import (
     create_access_token,
     create_partial_token,
+    create_refresh_token,
     decode_partial_token,
+    decode_refresh_token,
     generate_totp_secret,
     get_totp_uri,
     hash_password,
@@ -21,6 +23,7 @@ from models import User
 from schemas import (
     LoginRequest,
     LoginResponse,
+    RefreshRequest,
     RegisterRequest,
     TokenResponse,
     TotpCompleteRequest,
@@ -56,7 +59,10 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     db.add(user)
     await db.commit()
 
-    return TokenResponse(access_token=create_access_token({"sub": user.id}))
+    return TokenResponse(
+        access_token=create_access_token({"sub": user.id}),
+        refresh_token=create_refresh_token(user.id),
+    )
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -74,7 +80,10 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
             partial_token=create_partial_token(user.id),
         )
 
-    return LoginResponse(access_token=create_access_token({"sub": user.id}))
+    return LoginResponse(
+        access_token=create_access_token({"sub": user.id}),
+        refresh_token=create_refresh_token(user.id),
+    )
 
 
 @router.post("/2fa/complete", response_model=TokenResponse)
@@ -101,7 +110,38 @@ async def complete_2fa(req: TotpCompleteRequest, db: AsyncSession = Depends(get_
             detail="Invalid TOTP code",
         )
 
-    return TokenResponse(access_token=create_access_token({"sub": user.id}))
+    return TokenResponse(
+        access_token=create_access_token({"sub": user.id}),
+        refresh_token=create_refresh_token(user.id),
+    )
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_token(req: RefreshRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Exchange a valid refresh token for a fresh access token + refresh token.
+
+    The old refresh token remains valid until it expires (30 days), so clients
+    can retry if the response is lost.  In practice the client always stores
+    the latest pair it receives.
+    """
+    exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired refresh token",
+    )
+    try:
+        user_id = decode_refresh_token(req.refresh_token)
+    except Exception:
+        raise exc
+
+    user = await db.get(User, user_id)
+    if user is None:
+        raise exc
+
+    return TokenResponse(
+        access_token=create_access_token({"sub": user.id}),
+        refresh_token=create_refresh_token(user.id),
+    )
 
 
 @router.post("/2fa/setup", response_model=TotpSetupResponse)

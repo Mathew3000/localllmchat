@@ -46,6 +46,9 @@ async def _auth(token: str) -> tuple[User, AsyncSession]:
         user_id: str | None = payload.get("sub")
         if not user_id:
             raise ValueError("missing sub")
+        # Refresh tokens must not be used as WebSocket access tokens.
+        if payload.get("type") == "refresh":
+            raise ValueError("refresh token used as access token")
         user = await db.get(User, user_id)
         if not user:
             raise ValueError("user not found")

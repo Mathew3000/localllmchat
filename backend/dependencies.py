@@ -29,6 +29,9 @@ async def get_current_user(
         user_id: str | None = payload.get("sub")
         if not user_id:
             raise exc
+        # Refresh tokens must not be usable as access tokens.
+        if payload.get("type") == "refresh":
+            raise exc
     except JWTError:
         raise exc
 

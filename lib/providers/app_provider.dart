@@ -905,6 +905,54 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  // ── Token refresh helpers ─────────────────────────────────────────────────
+
+  /// Decode the JWT payload (without signature verification) to check the
+  /// `exp` claim.  Returns true if the token is expired or unparseable.
+  static bool _isTokenExpired(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return true;
+      // JWT uses base64url without padding — normalize to standard base64.
+      final padded = base64Url.normalize(parts[1]);
+      final payload = utf8.decode(base64Url.decode(padded));
+      final data = jsonDecode(payload) as Map<String, dynamic>;
+      final exp = data['exp'] as int?;
+      if (exp == null) return false;
+      final expiry =
+          DateTime.fromMillisecondsSinceEpoch(exp * 1000, isUtc: true);
+      // Add a 30-second buffer so we refresh slightly before the server rejects.
+      return DateTime.now().toUtc().isAfter(
+            expiry.subtract(const Duration(seconds: 30)),
+          );
+    } catch (_) {
+      return false; // If we can't parse it, let the server decide.
+    }
+  }
+
+  /// Try to refresh the backend access token using the stored refresh token.
+  /// Updates [_settings] and persists to storage on success.
+  /// Returns true if the access token was successfully renewed.
+  Future<bool> _tryRefreshBackendToken() async {
+    final refreshToken = _settings.backendRefreshToken;
+    if (refreshToken.isEmpty) return false;
+    try {
+      final result = await BackendService.refreshTokenStatic(
+        _settings.backendUrl,
+        refreshToken,
+        allowSelfSigned: _settings.backendAllowSelfSigned,
+      );
+      _settings = _settings.copyWith(
+        backendToken: result.token!,
+        backendRefreshToken: result.refreshToken ?? refreshToken,
+      );
+      await _storage.saveSettings(_settings);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _connectBackend() async {
     if (_backendConnecting) return;
     _backendConnecting = true;
@@ -912,6 +960,19 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
 
     try {
+      // Proactively refresh the access token if it has already expired.
+      // This avoids a failed WS connect and an extra round-trip.
+      if (_settings.backendToken.isNotEmpty &&
+          _isTokenExpired(_settings.backendToken)) {
+        final refreshed = await _tryRefreshBackendToken();
+        if (!refreshed) {
+          _backendConnectError =
+              'Session expired — please log in again.';
+          _backendConnecting = false;
+          notifyListeners();
+          return;
+        }
+      }
       _backend?.dispose();
       final activeUrl = await _resolveBackendUrl();
       _backend = BackendService(
@@ -940,6 +1001,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
             'useBackend': _settings.useBackend,
             'backendUrl': _settings.backendUrl,
             'backendToken': _settings.backendToken,
+            'backendRefreshToken': _settings.backendRefreshToken,
             'backendAllowSelfSigned': _settings.backendAllowSelfSigned,
             'autoSyncEnabled': _settings.autoSyncEnabled,
             'autoSyncIntervalMinutes': _settings.autoSyncIntervalMinutes,
@@ -986,7 +1048,41 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       // and must be reached by the client — fetch their tools now so they can
       // be relayed through the WebSocket during generation.
       _fetchAllMcpTools(localOnlyOnly: true);
+    } on BackendAuthException {
+      // The server rejected our access token (401/403).  Try once to refresh.
+      _backend?.dispose();
+      _backend = null;
+      _backendConnecting = false; // allow the recursive call below
+      final refreshed = await _tryRefreshBackendToken();
+      if (refreshed) {
+        // Retry with the new token (recursive — guarded by _backendConnecting).
+        await _connectBackend();
+      } else {
+        _backendConnectError = 'Session expired — please log in again.';
+        notifyListeners();
+      }
+      return;
     } catch (e) {
+      // Check for WS upgrade auth failures (server sends HTTP 403 when the
+      // token is invalid — the client sees a WebSocketException with "403").
+      final msg = e.toString().toLowerCase();
+      final looksLikeAuthError = msg.contains('403') ||
+          msg.contains('401') ||
+          msg.contains('1008') ||
+          msg.contains('unauthorized');
+      if (looksLikeAuthError) {
+        _backend?.dispose();
+        _backend = null;
+        _backendConnecting = false;
+        final refreshed = await _tryRefreshBackendToken();
+        if (refreshed) {
+          await _connectBackend();
+        } else {
+          _backendConnectError = 'Session expired — please log in again.';
+          notifyListeners();
+        }
+        return;
+      }
       _backendConnectError = e.toString();
       _backend?.dispose();
       _backend = null;
@@ -1033,6 +1129,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     _settings = _settings.copyWith(
       backendUrl: url,
       backendToken: result.token!,
+      backendRefreshToken: result.refreshToken ?? '',
       useBackend: true,
     );
     await _storage.saveSettings(_settings);
@@ -1043,14 +1140,15 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Finalize a 2FA login with the TOTP [code] and the [partialToken] from
   /// the previous [backendLogin] call.
   Future<void> backendComplete2fa(String partialToken, String code) async {
-    final token = await BackendService.complete2faStatic(
+    final result = await BackendService.complete2faStatic(
       _settings.backendUrl,
       partialToken,
       code,
       allowSelfSigned: _settings.backendAllowSelfSigned,
     );
     _settings = _settings.copyWith(
-      backendToken: token,
+      backendToken: result.token!,
+      backendRefreshToken: result.refreshToken ?? '',
       useBackend: true,
     );
     await _storage.saveSettings(_settings);
@@ -1063,7 +1161,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     String username,
     String password,
   ) async {
-    final token = await BackendService.registerStatic(
+    final result = await BackendService.registerStatic(
       url,
       username,
       password,
@@ -1071,7 +1169,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
     _settings = _settings.copyWith(
       backendUrl: url,
-      backendToken: token,
+      backendToken: result.token!,
+      backendRefreshToken: result.refreshToken ?? '',
       useBackend: true,
     );
     await _storage.saveSettings(_settings);
@@ -1084,6 +1183,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     _settings = _settings.copyWith(
       useBackend: false,
       backendToken: '',
+      backendRefreshToken: '',
     );
     await _storage.saveSettings(_settings);
     // Reload local conversations
@@ -2223,6 +2323,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         useBackend: _settings.useBackend,
         backendUrl: _settings.backendUrl,
         backendToken: _settings.backendToken,
+        backendRefreshToken: _settings.backendRefreshToken,
         backendAllowSelfSigned: _settings.backendAllowSelfSigned,
         backendAwayUrl: _settings.backendAwayUrl,
         autoSyncEnabled: _settings.autoSyncEnabled,

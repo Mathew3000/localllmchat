@@ -82,6 +82,10 @@ class AppSettings {
   final String backendUrl;
   /// JWT access token for the backend server.  Device-local — excluded from sync.
   final String backendToken;
+  /// JWT refresh token for the backend server (30-day lifetime).
+  /// Used to silently obtain a new access token when the current one expires.
+  /// Device-local — excluded from sync.
+  final String backendRefreshToken;
   /// When true, TLS certificate errors are ignored (for self-signed LAN certs).
   /// Device-local — excluded from sync.
   final bool backendAllowSelfSigned;
@@ -134,6 +138,7 @@ class AppSettings {
     this.useBackend = false,
     this.backendUrl = '',
     this.backendToken = '',
+    this.backendRefreshToken = '',
     this.backendAllowSelfSigned = false,
     this.backendAwayUrl = '',
     this.allowSelfSigned = false,
@@ -181,6 +186,7 @@ class AppSettings {
     bool? useBackend,
     String? backendUrl,
     String? backendToken,
+    String? backendRefreshToken,
     bool? backendAllowSelfSigned,
     String? backendAwayUrl,
     bool? allowSelfSigned,
@@ -227,6 +233,7 @@ class AppSettings {
         useBackend: useBackend ?? this.useBackend,
         backendUrl: backendUrl ?? this.backendUrl,
         backendToken: backendToken ?? this.backendToken,
+        backendRefreshToken: backendRefreshToken ?? this.backendRefreshToken,
         backendAllowSelfSigned:
             backendAllowSelfSigned ?? this.backendAllowSelfSigned,
         backendAwayUrl: backendAwayUrl ?? this.backendAwayUrl,
@@ -265,6 +272,7 @@ class AppSettings {
         'useBackend': useBackend,
         'backendUrl': backendUrl,
         'backendToken': backendToken,
+        'backendRefreshToken': backendRefreshToken,
         'backendAllowSelfSigned': backendAllowSelfSigned,
         'backendAwayUrl': backendAwayUrl,
         'allowSelfSigned': allowSelfSigned,
@@ -287,6 +295,7 @@ class AppSettings {
     j.remove('useBackend');
     j.remove('backendUrl');
     j.remove('backendToken');
+    j.remove('backendRefreshToken');
     j.remove('backendAllowSelfSigned');
     j.remove('backendAwayUrl');
     // Direct API TLS bypass is device-local.
@@ -348,6 +357,7 @@ class AppSettings {
       useBackend: json['useBackend'] as bool? ?? false,
       backendUrl: json['backendUrl'] as String? ?? '',
       backendToken: json['backendToken'] as String? ?? '',
+      backendRefreshToken: json['backendRefreshToken'] as String? ?? '',
       backendAllowSelfSigned:
           json['backendAllowSelfSigned'] as bool? ?? false,
       backendAwayUrl: json['backendAwayUrl'] as String? ?? '',

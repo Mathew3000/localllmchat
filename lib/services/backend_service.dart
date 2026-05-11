@@ -93,9 +93,23 @@ class BEToolResult extends BackendEvent {
 
 // ── Auth result types ─────────────────────────────────────────────────────────
 
+/// Thrown by [BackendService._check] when the server returns 401 or 403.
+/// Used to distinguish auth failures from other HTTP errors so the caller
+/// can attempt a token refresh before showing an error to the user.
+class BackendAuthException implements Exception {
+  final int statusCode;
+  final String detail;
+  const BackendAuthException(this.statusCode, this.detail);
+  @override
+  String toString() => 'BackendAuthException($statusCode): $detail';
+}
+
 class LoginResult {
   /// Full access token — set when login is complete (no 2FA or 2FA already done).
   final String? token;
+
+  /// Refresh token — stored on-device to silently renew the access token.
+  final String? refreshToken;
 
   /// True when the server requires a TOTP code before issuing a full token.
   final bool requires2fa;
@@ -103,7 +117,12 @@ class LoginResult {
   /// Partial token to send alongside the TOTP code to complete login.
   final String? partialToken;
 
-  const LoginResult({this.token, this.requires2fa = false, this.partialToken});
+  const LoginResult({
+    this.token,
+    this.refreshToken,
+    this.requires2fa = false,
+    this.partialToken,
+  });
 }
 
 class TotpSetup {
@@ -191,7 +210,10 @@ class BackendService {
             partialToken: body['partial_token'] as String?,
           );
         }
-        return LoginResult(token: body['access_token'] as String);
+        return LoginResult(
+          token: body['access_token'] as String,
+          refreshToken: body['refresh_token'] as String?,
+        );
       }
       String? detail;
       try {
@@ -203,8 +225,8 @@ class BackendService {
     }
   }
 
-  /// Register a new account; returns the access token string directly.
-  static Future<String> registerStatic(
+  /// Register a new account; returns a [LoginResult] with access + refresh tokens.
+  static Future<LoginResult> registerStatic(
     String baseUrl,
     String username,
     String password, {
@@ -221,7 +243,11 @@ class BackendService {
           )
           .timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200 || resp.statusCode == 201) {
-        return (jsonDecode(resp.body) as Map<String, dynamic>)['access_token'] as String;
+        final body = jsonDecode(resp.body) as Map<String, dynamic>;
+        return LoginResult(
+          token: body['access_token'] as String,
+          refreshToken: body['refresh_token'] as String?,
+        );
       }
       String? detail;
       try {
@@ -234,7 +260,8 @@ class BackendService {
   }
 
   /// Complete a 2FA login by exchanging [partialToken] + [code] for a full token.
-  static Future<String> complete2faStatic(
+  /// Returns a [LoginResult] with both the access token and refresh token.
+  static Future<LoginResult> complete2faStatic(
     String baseUrl,
     String partialToken,
     String code, {
@@ -251,13 +278,52 @@ class BackendService {
           )
           .timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
-        return (jsonDecode(resp.body) as Map<String, dynamic>)['access_token'] as String;
+        final body = jsonDecode(resp.body) as Map<String, dynamic>;
+        return LoginResult(
+          token: body['access_token'] as String,
+          refreshToken: body['refresh_token'] as String?,
+        );
       }
       String? detail;
       try {
         detail = (jsonDecode(resp.body) as Map<String, dynamic>)['detail'] as String?;
       } catch (_) {}
       throw Exception(detail ?? '2FA failed (${resp.statusCode})');
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Exchange a refresh token for a fresh access token + refresh token.
+  /// Returns the updated [LoginResult] on success.
+  /// Throws an [Exception] if the refresh token is invalid or expired.
+  static Future<LoginResult> refreshTokenStatic(
+    String baseUrl,
+    String refreshToken, {
+    bool allowSelfSigned = false,
+  }) async {
+    final base = baseUrl.trimRight().replaceAll(RegExp(r'/$'), '');
+    final client = _makeClient(allowSelfSigned);
+    try {
+      final resp = await client
+          .post(
+            Uri.parse('$base/api/auth/refresh'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'refresh_token': refreshToken}),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (resp.statusCode == 200) {
+        final body = jsonDecode(resp.body) as Map<String, dynamic>;
+        return LoginResult(
+          token: body['access_token'] as String,
+          refreshToken: body['refresh_token'] as String?,
+        );
+      }
+      String? detail;
+      try {
+        detail = (jsonDecode(resp.body) as Map<String, dynamic>)['detail'] as String?;
+      } catch (_) {}
+      throw Exception(detail ?? 'Token refresh failed (${resp.statusCode})');
     } finally {
       client.close();
     }
@@ -724,6 +790,10 @@ class BackendService {
         detail = (jsonDecode(resp.body) as Map<String, dynamic>)['detail']
             as String?;
       } catch (_) {}
+      if (resp.statusCode == 401 || resp.statusCode == 403) {
+        throw BackendAuthException(
+            resp.statusCode, detail ?? 'HTTP ${resp.statusCode}');
+      }
       throw Exception(detail ?? 'HTTP ${resp.statusCode}');
     }
   }

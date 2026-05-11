@@ -46,6 +46,30 @@ def verify_totp(secret: str, code: str) -> bool:
     return pyotp.TOTP(secret).verify(code, valid_window=1)
 
 
+def create_refresh_token(user_id: str) -> str:
+    """Long-lived refresh token (30 days). Has type='refresh' so it cannot be
+    used as a regular access token."""
+    to_encode = {
+        "sub": user_id,
+        "type": "refresh",
+        "exp": datetime.now(timezone.utc) + timedelta(
+            days=settings.refresh_token_expire_days
+        ),
+    }
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+
+
+def decode_refresh_token(token: str) -> str:
+    """Decode a refresh token and return the user_id. Raises on invalid/expired."""
+    payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+    if payload.get("type") != "refresh":
+        raise ValueError("Not a refresh token")
+    user_id: str | None = payload.get("sub")
+    if not user_id:
+        raise ValueError("Missing sub in refresh token")
+    return user_id
+
+
 def create_partial_token(user_id: str) -> str:
     """Short-lived token indicating password auth passed but 2FA is pending."""
     to_encode = {

@@ -19,6 +19,7 @@ class RegisterRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    refresh_token: str | None = None
 
 
 class LoginResponse(BaseModel):
@@ -26,6 +27,11 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     requires_2fa: bool = False
     partial_token: str | None = None
+    refresh_token: str | None = None
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 
 class TotpSetupResponse(BaseModel):
