@@ -1445,6 +1445,19 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _isStreaming = true;
     _error = null;
+
+    // Create the typing-indicator placeholder before any async work so the
+    // three-dot animation appears immediately — even while keep-alive starts,
+    // URL auto-detection runs, or the memory context is being fetched.
+    // The sub-functions receive this placeholder and reuse it instead of
+    // creating a second one.
+    final placeholder = Message(
+      role: Role.assistant,
+      content: '',
+      isStreaming: true,
+    );
+    _activeConversation!.messages.add(placeholder);
+    _activeConversation!.updatedAt = DateTime.now();
     notifyListeners();
 
     await StreamingKeepAlive.start();
@@ -1456,34 +1469,47 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     final memoryCtx = usingBackend ? null : await _fetchUserMemory();
 
     if (usingBackend) {
-      await _runBackendGeneration(memoryCtx: memoryCtx);
+      await _runBackendGeneration(
+        memoryCtx: memoryCtx,
+        userMsg: userMsg,
+        placeholder: placeholder,
+      );
     } else {
       await _autoDetectUrl();
       if (mcpAvailable) {
-        await _runAgenticLoop(memoryCtx: memoryCtx);
+        await _runAgenticLoop(memoryCtx: memoryCtx, placeholder: placeholder);
       } else {
-        await _runStreamingChat(memoryCtx: memoryCtx);
+        await _runStreamingChat(memoryCtx: memoryCtx, placeholder: placeholder);
       }
     }
   }
 
   // ── Backend generation ────────────────────────────────────────────────────
 
-  Future<void> _runBackendGeneration({String? memoryCtx}) async {
+  Future<void> _runBackendGeneration({
+    String? memoryCtx,
+    Message? userMsg,
+    Message? placeholder,
+  }) async {
     final conv = _activeConversation!;
-    final userMsg = conv.messages.last; // just added in sendMessage()
+    // sendMessage() passes userMsg explicitly so we don't have to look it up
+    // from conv.messages (which now ends with the placeholder, not the user msg).
+    final Message actualUserMsg = userMsg ??
+        conv.messages.lastWhere((m) => m.role == Role.user);
 
-    // Create local placeholder so the bubble appears immediately
-    final assistantMsg = Message(
-      role: Role.assistant,
-      content: '',
-      isStreaming: true,
-    );
-    conv.messages.add(assistantMsg);
-    conv.updatedAt = DateTime.now();
+    final Message assistantMsg;
+    if (placeholder != null) {
+      // Reuse the pre-created placeholder — typing dots are already showing.
+      assistantMsg = placeholder;
+    } else {
+      // Fallback for callers that don't pass a placeholder.
+      assistantMsg = Message(role: Role.assistant, content: '', isStreaming: true);
+      conv.messages.add(assistantMsg);
+      conv.updatedAt = DateTime.now();
+      notifyListeners();
+    }
     _streamingBackendMsg = assistantMsg;
     _streamingBackendConvId = conv.id;
-    notifyListeners();
 
     // Collect tool schemas for client-relay:
     //  • servers with localOnly=true (from MCP Servers config)
@@ -1507,9 +1533,9 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       await _backend!.sendMessage(
         conv.id,
-        userMsg.content,
-        userMsg.images,
-        messageId: userMsg.id,
+        actualUserMsg.content,
+        actualUserMsg.images,
+        messageId: actualUserMsg.id,
         // localOnly tools are sent by the client and relayed via WebSocket;
         // all other MCP servers are handled by the backend directly.
         // memoryContext is omitted — backend pre-fetches it from non-local
@@ -1811,16 +1837,20 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── Streaming (no tools) ──────────────────────────────────────────────────
 
-  Future<void> _runStreamingChat({String? memoryCtx}) async {
+  Future<void> _runStreamingChat({
+    String? memoryCtx,
+    Message? placeholder,
+  }) async {
     final conv = _activeConversation!; // capture for auto-title
-    final assistantMsg = Message(
-      role: Role.assistant,
-      content: '',
-      isStreaming: true,
-    );
-    conv.messages.add(assistantMsg);
-    conv.updatedAt = DateTime.now();
-    notifyListeners();
+    final Message assistantMsg;
+    if (placeholder != null) {
+      assistantMsg = placeholder; // reuse pre-created placeholder
+    } else {
+      assistantMsg = Message(role: Role.assistant, content: '', isStreaming: true);
+      conv.messages.add(assistantMsg);
+      conv.updatedAt = DateTime.now();
+      notifyListeners();
+    }
 
     try {
       final api = ApiService(_settingsWithMemory(memoryCtx), activeBaseUrl);
@@ -1878,24 +1908,37 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── Agentic loop (with MCP tools, fully streaming) ───────────────────────
 
-  Future<void> _runAgenticLoop({String? memoryCtx}) async {
+  Future<void> _runAgenticLoop({
+    String? memoryCtx,
+    Message? placeholder,
+  }) async {
     final conv = _activeConversation!; // capture for auto-title
     final api = ApiService(_settingsWithMemory(memoryCtx), activeBaseUrl);
     const maxIterations = 10;
 
-    Message? activeMsg;
+    // On the first iteration we reuse the pre-created placeholder so that
+    // typing dots appear immediately.  Subsequent iterations (after tool calls)
+    // always create fresh messages.
+    Message? activeMsg = placeholder;
 
     try {
       for (int i = 0; i < maxIterations; i++) {
+        // Exclude the current streaming message from the LLM history so the
+        // empty placeholder is never sent as context.
         final history = _activeConversation!.messages
             .where((m) => activeMsg == null || m.id != activeMsg.id)
             .toList();
 
-        activeMsg =
-            Message(role: Role.assistant, content: '', isStreaming: true);
-        _activeConversation!.messages.add(activeMsg);
-        _activeConversation!.updatedAt = DateTime.now();
-        notifyListeners();
+        if (activeMsg == null) {
+          // No pre-created placeholder available — create one now.
+          activeMsg =
+              Message(role: Role.assistant, content: '', isStreaming: true);
+          _activeConversation!.messages.add(activeMsg);
+          _activeConversation!.updatedAt = DateTime.now();
+          notifyListeners();
+        }
+        // else: first iteration with pre-created placeholder — already in
+        // the message list, no notifyListeners() needed.
 
         LlmResponse? response;
         await for (final chunk in api.streamChatWithTools(
