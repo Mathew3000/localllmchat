@@ -182,6 +182,15 @@ class BackendService {
     return http.Client();
   }
 
+  // ── Timeouts ──────────────────────────────────────────────────────────────
+
+  /// Timeout for auth operations (login, register, 2FA, refresh).
+  /// Auth calls are typically the first HTTPS request to the server and bear
+  /// the full TLS handshake + certificate validation cost. On Android this can
+  /// take 10–20 s on first connection, so we give them more room than regular
+  /// REST calls.
+  static const _authTimeout = Duration(seconds: 45);
+
   // ── Auth (static — no token required) ────────────────────────────────────
 
   /// Login; returns a [LoginResult]. If [LoginResult.requires2fa] is true,
@@ -201,7 +210,7 @@ class BackendService {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'username': username, 'password': password}),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(_authTimeout);
       if (resp.statusCode == 200 || resp.statusCode == 201) {
         final body = jsonDecode(resp.body) as Map<String, dynamic>;
         if (body['requires_2fa'] == true) {
@@ -241,7 +250,7 @@ class BackendService {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'username': username, 'password': password}),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(_authTimeout);
       if (resp.statusCode == 200 || resp.statusCode == 201) {
         final body = jsonDecode(resp.body) as Map<String, dynamic>;
         return LoginResult(
@@ -276,7 +285,7 @@ class BackendService {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'partial_token': partialToken, 'code': code}),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(_authTimeout);
       if (resp.statusCode == 200) {
         final body = jsonDecode(resp.body) as Map<String, dynamic>;
         return LoginResult(
@@ -311,7 +320,7 @@ class BackendService {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'refresh_token': refreshToken}),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(_authTimeout);
       if (resp.statusCode == 200) {
         final body = jsonDecode(resp.body) as Map<String, dynamic>;
         return LoginResult(

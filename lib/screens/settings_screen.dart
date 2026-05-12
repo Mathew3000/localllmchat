@@ -1,3 +1,4 @@
+import 'dart:async' show TimeoutException;
 import 'dart:convert';
 import 'dart:io';
 // dart:typed_data provided transitively via flutter/services;
@@ -2703,10 +2704,25 @@ class _BackendCardState extends State<_BackendCard> {
       _userCtrl.clear();
       _passCtrl.clear();
     } catch (e) {
-      setState(() => _error = e.toString());
+      setState(() => _error = _friendlyAuthError(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// Convert raw exceptions from the auth flow into human-readable messages.
+  static String _friendlyAuthError(Object e) {
+    if (e is TimeoutException) {
+      return 'Connection timed out. The server took too long to respond — '
+          'check the URL and your network connection, then try again.';
+    }
+    if (e is SocketException) {
+      return 'Cannot reach the server (${e.message}). '
+          'Check the URL and make sure the server is running.';
+    }
+    final msg = e.toString();
+    // Strip the "Exception: " prefix that Dart adds to plain Exception objects.
+    return msg.startsWith('Exception: ') ? msg.substring(11) : msg;
   }
 
   Future<void> _show2faLoginDialog(AppProvider p, String partialToken) async {
