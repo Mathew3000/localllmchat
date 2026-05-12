@@ -143,6 +143,13 @@ class BackendService {
   Timer? _pingTimer;
   bool _disposed = false;
 
+  /// Persistent HTTP client shared across all REST calls.
+  /// Keeping a single client lets the underlying TLS session be reused, which
+  /// avoids a full certificate-chain + OCSP validation on every call — a
+  /// significant saving on mobile networks where the first TLS handshake to a
+  /// Let's Encrypt host can take 10–20 seconds.
+  late final http.Client _restClient;
+
   final _events = StreamController<BackendEvent>.broadcast();
 
   Stream<BackendEvent> get events => _events.stream;
@@ -152,7 +159,7 @@ class BackendService {
     required this.baseUrl,
     required this.token,
     this.allowSelfSigned = false,
-  });
+  }) : _restClient = _makeClient(allowSelfSigned);
 
   // ── URL helpers ───────────────────────────────────────────────────────────
 
@@ -173,14 +180,8 @@ class BackendService {
 
   // ── HTTP client (supports self-signed certs) ──────────────────────────────
 
-  http.Client _httpClient() {
-    if (allowSelfSigned) {
-      final inner = HttpClient()
-        ..badCertificateCallback = (cert, host, port) => true;
-      return IOClient(inner);
-    }
-    return http.Client();
-  }
+  /// Returns the persistent REST client for this service instance.
+  http.Client _httpClient() => _restClient;
 
   // ── Timeouts ──────────────────────────────────────────────────────────────
 
@@ -394,6 +395,7 @@ class BackendService {
   void dispose() {
     _disposed = true;
     disconnect();
+    _restClient.close();
     if (!_events.isClosed) _events.close();
   }
 
@@ -519,33 +521,21 @@ class BackendService {
   // ── REST: Conversations ───────────────────────────────────────────────────
 
   Future<List<Conversation>> fetchConversations() async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .get(Uri.parse('$_base/api/conversations'), headers: _headers)
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-      final list = jsonDecode(resp.body) as List<dynamic>;
-      return list
-          .map((j) => _convFromJson(j as Map<String, dynamic>))
-          .toList();
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .get(Uri.parse('$_base/api/conversations'), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
+    final list = jsonDecode(resp.body) as List<dynamic>;
+    return list.map((j) => _convFromJson(j as Map<String, dynamic>)).toList();
   }
 
   Future<Conversation> fetchConversation(String id) async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .get(Uri.parse('$_base/api/conversations/$id'), headers: _headers)
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-      return _convFromJson(jsonDecode(resp.body) as Map<String, dynamic>,
-          withMessages: true);
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .get(Uri.parse('$_base/api/conversations/$id'), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
+    return _convFromJson(jsonDecode(resp.body) as Map<String, dynamic>,
+        withMessages: true);
   }
 
   Future<Conversation> createConversation({
@@ -555,153 +545,113 @@ class BackendService {
     int? userBubbleColor,
     int? assistantBubbleColor,
   }) async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .post(
-            Uri.parse('$_base/api/conversations'),
-            headers: _headers,
-            body: jsonEncode({
-              'title': title,
-              if (id != null) 'id': id,
-              'is_secret': isSecret,
-              if (userBubbleColor != null) 'user_bubble_color': userBubbleColor,
-              if (assistantBubbleColor != null)
-                'assistant_bubble_color': assistantBubbleColor,
-            }),
-          )
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-      return _convFromJson(jsonDecode(resp.body) as Map<String, dynamic>);
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .post(
+          Uri.parse('$_base/api/conversations'),
+          headers: _headers,
+          body: jsonEncode({
+            'title': title,
+            if (id != null) 'id': id,
+            'is_secret': isSecret,
+            if (userBubbleColor != null) 'user_bubble_color': userBubbleColor,
+            if (assistantBubbleColor != null)
+              'assistant_bubble_color': assistantBubbleColor,
+          }),
+        )
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
+    return _convFromJson(jsonDecode(resp.body) as Map<String, dynamic>);
   }
 
   Future<void> patchConversation(String id, Map<String, dynamic> fields) async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .patch(
-            Uri.parse('$_base/api/conversations/$id'),
-            headers: _headers,
-            body: jsonEncode(fields),
-          )
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .patch(
+          Uri.parse('$_base/api/conversations/$id'),
+          headers: _headers,
+          body: jsonEncode(fields),
+        )
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
   }
 
   Future<void> renameConversation(String id, String title) =>
       patchConversation(id, {'title': title});
 
   Future<void> deleteConversation(String id) async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .delete(Uri.parse('$_base/api/conversations/$id'), headers: _headers)
-          .timeout(const Duration(seconds: 15));
-      if (resp.statusCode != 204 && resp.statusCode != 404) {
-        throw Exception('Delete failed: ${resp.statusCode}');
-      }
-    } finally {
-      client.close();
+    final resp = await _httpClient()
+        .delete(Uri.parse('$_base/api/conversations/$id'), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    if (resp.statusCode != 204 && resp.statusCode != 404) {
+      throw Exception('Delete failed: ${resp.statusCode}');
     }
   }
 
   Future<void> addMessage(String convId, Message msg) async {
-    final client = _httpClient();
-    try {
-      final body = <String, dynamic>{
-        'id': msg.id,
-        'role': msg.role.name,
-        'content': msg.content,
-        'images': msg.images,
-        if (msg.toolCallId != null) 'tool_call_id': msg.toolCallId,
-        if (msg.toolCalls != null)
-          'tool_calls': msg.toolCalls!.map((t) => t.toApiJson()).toList(),
-      };
-      final resp = await client
-          .post(
-            Uri.parse('$_base/api/conversations/$convId/messages'),
-            headers: _headers,
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-    } finally {
-      client.close();
-    }
+    final body = <String, dynamic>{
+      'id': msg.id,
+      'role': msg.role.name,
+      'content': msg.content,
+      'images': msg.images,
+      if (msg.toolCallId != null) 'tool_call_id': msg.toolCallId,
+      if (msg.toolCalls != null)
+        'tool_calls': msg.toolCalls!.map((t) => t.toApiJson()).toList(),
+    };
+    final resp = await _httpClient()
+        .post(
+          Uri.parse('$_base/api/conversations/$convId/messages'),
+          headers: _headers,
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
   }
 
   Future<void> deleteMessage(String convId, String msgId) async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .delete(
-            Uri.parse('$_base/api/conversations/$convId/messages/$msgId'),
-            headers: _headers,
-          )
-          .timeout(const Duration(seconds: 15));
-      if (resp.statusCode != 204 && resp.statusCode != 404) {
-        throw Exception('Delete failed: ${resp.statusCode}');
-      }
-    } finally {
-      client.close();
+    final resp = await _httpClient()
+        .delete(
+          Uri.parse('$_base/api/conversations/$convId/messages/$msgId'),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 15));
+    if (resp.statusCode != 204 && resp.statusCode != 404) {
+      throw Exception('Delete failed: ${resp.statusCode}');
     }
   }
 
   // ── REST: Settings ────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> fetchSettings() async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .get(Uri.parse('$_base/api/settings'), headers: _headers)
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-      return (jsonDecode(resp.body) as Map<String, dynamic>)['data']
-          as Map<String, dynamic>;
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .get(Uri.parse('$_base/api/settings'), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
+    return (jsonDecode(resp.body) as Map<String, dynamic>)['data']
+        as Map<String, dynamic>;
   }
 
   Future<void> pushSettings(Map<String, dynamic> data) async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .put(
-            Uri.parse('$_base/api/settings'),
-            headers: _headers,
-            body: jsonEncode({'data': data}),
-          )
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .put(
+          Uri.parse('$_base/api/settings'),
+          headers: _headers,
+          body: jsonEncode({'data': data}),
+        )
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
   }
 
   /// Asks the backend to generate a title for [convId] based on [firstMessage].
   /// The backend calls the LLM, persists the result, and returns the title.
   Future<String> generateTitle(String convId, String firstMessage) async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .post(
-            Uri.parse('$_base/api/conversations/$convId/generate-title'),
-            headers: _headers,
-            body: jsonEncode({'first_message': firstMessage}),
-          )
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-      return (jsonDecode(resp.body) as Map<String, dynamic>)['title'] as String;
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .post(
+          Uri.parse('$_base/api/conversations/$convId/generate-title'),
+          headers: _headers,
+          body: jsonEncode({'first_message': firstMessage}),
+        )
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
+    return (jsonDecode(resp.body) as Map<String, dynamic>)['title'] as String;
   }
 
   // ── REST: 2FA management (requires auth) ─────────────────────────────────
@@ -709,85 +659,62 @@ class BackendService {
   /// Generate a new TOTP secret for this account. 2FA is NOT yet active until
   /// [confirm2fa] is called with a valid code.
   Future<TotpSetup> setup2fa() async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .post(Uri.parse('$_base/api/auth/2fa/setup'), headers: _headers)
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-      final body = jsonDecode(resp.body) as Map<String, dynamic>;
-      return TotpSetup(
-        secret: body['secret'] as String,
-        uri: body['uri'] as String,
-      );
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .post(Uri.parse('$_base/api/auth/2fa/setup'), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    return TotpSetup(
+      secret: body['secret'] as String,
+      uri: body['uri'] as String,
+    );
   }
 
   /// Confirm the first TOTP code to enable 2FA on the account.
   Future<void> confirm2fa(String code) async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .post(
-            Uri.parse('$_base/api/auth/2fa/confirm'),
-            headers: _headers,
-            body: jsonEncode({'code': code}),
-          )
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .post(
+          Uri.parse('$_base/api/auth/2fa/confirm'),
+          headers: _headers,
+          body: jsonEncode({'code': code}),
+        )
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
   }
 
   /// Disable 2FA — requires a valid current TOTP code.
   Future<void> disable2fa(String code) async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .post(
-            Uri.parse('$_base/api/auth/2fa/disable'),
-            headers: _headers,
-            body: jsonEncode({'code': code}),
-          )
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .post(
+          Uri.parse('$_base/api/auth/2fa/disable'),
+          headers: _headers,
+          body: jsonEncode({'code': code}),
+        )
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
   }
 
   /// Returns true if 2FA is currently enabled for the authenticated user.
   Future<bool> get2faStatus() async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .get(Uri.parse('$_base/api/auth/2fa/status'), headers: _headers)
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-      return (jsonDecode(resp.body) as Map<String, dynamic>)['totp_enabled'] as bool? ?? false;
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .get(Uri.parse('$_base/api/auth/2fa/status'), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
+    return (jsonDecode(resp.body) as Map<String, dynamic>)['totp_enabled']
+            as bool? ??
+        false;
   }
 
   // ── REST: Models ──────────────────────────────────────────────────────────
 
   Future<List<String>> fetchModels() async {
-    final client = _httpClient();
-    try {
-      final resp = await client
-          .get(Uri.parse('$_base/api/models'), headers: _headers)
-          .timeout(const Duration(seconds: 15));
-      _check(resp);
-      final data = jsonDecode(resp.body) as Map<String, dynamic>;
-      final list = data['data'] as List<dynamic>;
-      return list.map((m) => m['id'] as String).toList();
-    } finally {
-      client.close();
-    }
+    final resp = await _httpClient()
+        .get(Uri.parse('$_base/api/models'), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+    _check(resp);
+    final data = jsonDecode(resp.body) as Map<String, dynamic>;
+    final list = data['data'] as List<dynamic>;
+    return list.map((m) => m['id'] as String).toList();
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

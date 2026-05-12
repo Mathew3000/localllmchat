@@ -1083,7 +1083,14 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         return;
       }
-      _backendConnectError = e.toString();
+      // Give a friendly label when the error is a timeout so the user doesn't
+      // see the raw Dart "TimeoutException: Future not completed after …".
+      final errStr = e.toString();
+      _backendConnectError = (e is TimeoutException ||
+              errStr.contains('TimeoutException') ||
+              errStr.toLowerCase().contains('timed out'))
+          ? 'Connection timed out — check the server URL and your network.'
+          : errStr;
       _backend?.dispose();
       _backend = null;
     } finally {
