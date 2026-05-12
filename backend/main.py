@@ -13,7 +13,14 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="LocalLLMChat Backend", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="LocalLLMChat Backend",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url=None,     # disable Swagger UI  (/docs)
+    redoc_url=None,    # disable ReDoc       (/redoc)
+    openapi_url=None,  # disable OpenAPI schema (/openapi.json)
+)
 
 # Allow the Flutter app to connect from any LAN origin.
 # Tighten this if you expose the backend beyond your LAN.
