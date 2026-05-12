@@ -106,6 +106,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         useBackend: s.useBackend,
         backendUrl: s.backendUrl,
         backendToken: s.backendToken,
+        backendRefreshToken: s.backendRefreshToken,
         backendAllowSelfSigned: s.backendAllowSelfSigned,
         backendAwayUrl: s.backendAwayUrl,
         allowSelfSigned: _allowSelfSigned,

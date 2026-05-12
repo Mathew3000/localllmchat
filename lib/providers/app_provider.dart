@@ -848,6 +848,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     _lastNetworkCheck = null;
     _startAutoSync(); // restart in case interval or enabled flag changed
     // Push shared settings to backend so run_generation() picks them up.
+    // Errors are swallowed — if the push fails here the settings will be
+    // pushed again the next time _connectBackend() completes successfully.
     if (_settings.useBackend && _backend != null) {
       _backend!.pushSettings(_settings.toSyncJson()).catchError((_) {});
     }
@@ -1012,6 +1014,10 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           });
           await _storage.saveSettings(_settings);
         }
+        // Always push merged settings back so the server stays up-to-date and
+        // any pending local changes (e.g. from a failed push during the last
+        // session) are not lost.
+        _backend!.pushSettings(_settings.toSyncJson()).catchError((_) {});
       } catch (_) {
         // Non-fatal — proceed with local settings if the pull fails.
       }
