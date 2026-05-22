@@ -1849,14 +1849,20 @@ class _BackupCard extends StatelessWidget {
     final now = DateTime.now();
     final stamp =
         '${now.year}${_p(now.month)}${_p(now.day)}_${_p(now.hour)}${_p(now.minute)}${_p(now.second)}';
+    final fileBytes = Uint8List.fromList(utf8.encode(outputJson));
     try {
       final path = await FilePicker.platform.saveFile(
         dialogTitle: 'Save LoomChat backup',
         fileName: 'localllmchat_$stamp.json',
-        bytes: Uint8List.fromList(utf8.encode(outputJson)),
+        // bytes is used on Web; on desktop we write the file manually below.
+        bytes: fileBytes,
       );
       if (!context.mounted) return;
       if (path != null) {
+        // On desktop platforms the file picker only returns the chosen path —
+        // it does NOT write anything. Write the bytes ourselves.
+        await File(path).writeAsBytes(fileBytes, flush: true);
+        if (!context.mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Backup saved'),
