@@ -645,6 +645,12 @@ class _MarkdownContent extends StatelessWidget {
         if (href == null) return;
         final uri = Uri.tryParse(href);
         if (uri == null) return;
+        // Only allow safe, well-known URI schemes.  LLM output is untrusted
+        // (it can be steered by prompt injection from fetched web content or
+        // MCP tool results), so we must not blindly launch arbitrary schemes
+        // such as intent://, app://, tel:, etc.
+        const allowedSchemes = {'http', 'https', 'mailto'};
+        if (!allowedSchemes.contains(uri.scheme.toLowerCase())) return;
         if (await canLaunchUrl(uri)) {
           await launchUrl(uri, mode: LaunchMode.externalApplication);
         }

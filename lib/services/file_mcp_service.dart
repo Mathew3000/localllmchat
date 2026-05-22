@@ -127,14 +127,27 @@ class FileMcpService extends BaseMcpService {
   // ── Sandboxed path resolution ─────────────────────────────────────────────
 
   /// Resolves [relative] against [rootPath], normalises the result, and
-  /// ensures it does not escape the root.  Returns the absolute path.
+  /// throws [ArgumentError] if the result escapes the sandbox root.
+  ///
+  /// The check uses a separator-suffixed prefix (`rootPath + separator`) so
+  /// that a sibling directory whose name happens to start with the same
+  /// characters as [rootPath] is correctly rejected.  For example:
+  ///
+  ///   rootPath = "/home/user/projects/myapp"
+  ///   relative = "../myapp_secret/file.txt"
+  ///   normalised = "/home/user/projects/myapp_secret/file.txt"  ← rejected ✓
   String _resolve(String relative) {
-    // Normalise separators and strip leading slashes.
+    // Normalise separators and strip leading slashes / back-traversals.
     final clean = relative.trim().replaceAll('\\', '/').replaceAll(RegExp(r'^/+'), '');
     final joined = clean.isEmpty ? rootPath : p.join(rootPath, clean);
     final normalised = p.normalize(joined);
-    // Clamp to root if the path escapes.
-    if (!normalised.startsWith(rootPath)) return rootPath;
+    // Accept exactly rootPath itself, or any path strictly inside it.
+    final rootWithSep = rootPath.endsWith(p.separator)
+        ? rootPath
+        : '$rootPath${p.separator}';
+    if (normalised != rootPath && !normalised.startsWith(rootWithSep)) {
+      throw ArgumentError('Path escapes sandbox root: $relative');
+    }
     return normalised;
   }
 

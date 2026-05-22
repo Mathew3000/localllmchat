@@ -1,6 +1,6 @@
-from fastapi import Depends, HTTPException, WebSocket, Query, status
+import jwt
+from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import decode_token
@@ -32,7 +32,7 @@ async def get_current_user(
         # Refresh tokens must not be usable as access tokens.
         if payload.get("type") == "refresh":
             raise exc
-    except JWTError:
+    except jwt.InvalidTokenError:
         raise exc
 
     user = await db.get(User, user_id)

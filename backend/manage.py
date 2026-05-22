@@ -73,8 +73,11 @@ def main() -> None:
         if password != confirm:
             print("Error: passwords do not match.")
             sys.exit(1)
-        if len(password) < 8:
-            print("Error: password must be at least 8 characters.")
+        if len(password) < 12:
+            print("Error: password must be at least 12 characters.")
+            sys.exit(1)
+        if len(password) > 72:
+            print("Error: password must not exceed 72 characters (bcrypt limit).")
             sys.exit(1)
         asyncio.run(_create_user(username, password))
 

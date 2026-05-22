@@ -50,11 +50,18 @@ func main() {
 }
 
 func loadOrCreateJWTSecret() (string, error) {
-	// Use env override if provided (good for k8s / stateless deploys).
+	// Use env override if provided (recommended for all deployments).
 	if s := os.Getenv("JWT_SECRET"); s != "" {
 		return s, nil
 	}
-	// Otherwise persist a random secret in the DB so it survives restarts.
+
+	// No env var — fall back to a secret persisted in the DB.
+	// This is less secure because anyone with read access to the DB file can
+	// forge tokens.  Set JWT_SECRET in the environment to eliminate this risk.
+	// Generate a strong secret with:  openssl rand -hex 32
+	log.Println("WARNING: JWT_SECRET environment variable is not set.")
+	log.Println("WARNING: Using a DB-stored secret. Set JWT_SECRET for production deployments.")
+
 	val, err := getConfig("jwt_secret")
 	if err == nil && val != "" {
 		return val, nil

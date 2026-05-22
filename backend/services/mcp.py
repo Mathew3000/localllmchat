@@ -9,10 +9,13 @@ Use ``build_mcp_client()`` to get an auto-detecting client.
 """
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -388,8 +391,15 @@ async def load_tools_from_settings(
             for tool in tools:
                 openai_tools.append(tool.to_openai())
                 tool_clients[tool.name] = client
-        except Exception:
-            pass  # unreachable server — silently skip
+        except Exception as exc:
+            # Log the error so operators can detect misconfigured MCP servers.
+            # Credentials are not echoed — only the URL and the exception type.
+            logger.warning(
+                "MCP server at %s is unreachable or misconfigured: %s: %s",
+                url,
+                type(exc).__name__,
+                exc,
+            )
 
     return openai_tools, tool_clients
 

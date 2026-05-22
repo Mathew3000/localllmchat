@@ -277,10 +277,14 @@ async def run_generation(
                 ) as resp:
                     if resp.status_code != 200:
                         body = await resp.aread()
+                        # Truncate the upstream error body to avoid leaking
+                        # sensitive content (e.g. API keys reflected by the
+                        # provider in authenticated error responses).
+                        excerpt = body.decode(errors="replace")[:300].strip()
                         await _send({
                             "type": "error",
                             "conversation_id": conversation_id,
-                            "detail": f"LLM error {resp.status_code}: {body.decode()}",
+                            "detail": f"LLM error {resp.status_code}: {excerpt}",
                         })
                         await db.delete(assistant_msg)
                         await db.commit()

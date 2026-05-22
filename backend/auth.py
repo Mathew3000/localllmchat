@@ -1,8 +1,14 @@
+import base64
+import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import jwt
 import pyotp
-from jose import jwt
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from passlib.context import CryptContext
 
 from config import settings
@@ -28,7 +34,7 @@ def create_access_token(data: dict[str, Any]) -> str:
 
 
 def decode_token(token: str) -> dict[str, Any]:
-    """Decode and verify a JWT. Raises jose.JWTError on failure."""
+    """Decode and verify a JWT. Raises jwt.InvalidTokenError on failure."""
     return jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
 
 
@@ -46,28 +52,51 @@ def verify_totp(secret: str, code: str) -> bool:
     return pyotp.TOTP(secret).verify(code, valid_window=1)
 
 
-def create_refresh_token(user_id: str) -> str:
-    """Long-lived refresh token (30 days). Has type='refresh' so it cannot be
-    used as a regular access token."""
+def create_refresh_token(
+    user_id: str, family_id: str | None = None
+) -> tuple[str, str, str]:
+    """Create a refresh token with rotation-tracking claims.
+
+    Returns:
+        (token_str, jti, family_id)
+
+    ``jti`` uniquely identifies this token in the ``refresh_tokens`` table.
+    ``family_id`` groups all tokens issued in the same rotation chain so that
+    a re-use attack (presenting an already-consumed token) can revoke the
+    entire family.
+    """
+    jti = str(uuid.uuid4())
+    if family_id is None:
+        family_id = str(uuid.uuid4())
     to_encode = {
         "sub": user_id,
+        "jti": jti,
+        "fam": family_id,
         "type": "refresh",
         "exp": datetime.now(timezone.utc) + timedelta(
             days=settings.refresh_token_expire_days
         ),
     }
-    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+    token = jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+    return token, jti, family_id
 
 
-def decode_refresh_token(token: str) -> str:
-    """Decode a refresh token and return the user_id. Raises on invalid/expired."""
+def decode_refresh_token(token: str) -> tuple[str, str | None, str | None]:
+    """Decode a refresh token and return (user_id, jti, family_id).
+
+    ``jti`` and ``family_id`` are None for legacy tokens issued before the
+    rotation system was added — those tokens are still accepted but cannot be
+    revoked individually.
+
+    Raises ``jwt.InvalidTokenError`` or ``ValueError`` on invalid / expired tokens.
+    """
     payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
     if payload.get("type") != "refresh":
         raise ValueError("Not a refresh token")
     user_id: str | None = payload.get("sub")
     if not user_id:
         raise ValueError("Missing sub in refresh token")
-    return user_id
+    return user_id, payload.get("jti"), payload.get("fam")
 
 
 def create_partial_token(user_id: str) -> str:
@@ -89,3 +118,43 @@ def decode_partial_token(token: str) -> str:
     if not user_id:
         raise ValueError("Missing sub in partial token")
     return user_id
+
+
+# ── Settings field encryption ──────────────────────────────────────────────────
+# Sensitive settings fields (e.g. apiKey) are encrypted with AES-256-GCM before
+# storage so a database dump alone is not sufficient to recover them — the
+# SECRET_KEY env var is also required.
+
+def _settings_enc_key() -> bytes:
+    """Derive a 256-bit AES key from SECRET_KEY via HKDF-SHA256."""
+    hkdf = HKDF(
+        algorithm=SHA256(),
+        length=32,
+        salt=b"loomchat_settings_enc_v1",
+        info=b"",
+    )
+    return hkdf.derive(settings.secret_key.encode("utf-8"))
+
+
+def encrypt_value(plaintext: str) -> str:
+    """AES-256-GCM encrypt *plaintext*. Returns base64(nonce || ciphertext)."""
+    if not plaintext:
+        return ""
+    key = _settings_enc_key()
+    aesgcm = AESGCM(key)
+    nonce = os.urandom(12)
+    ct = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
+    return base64.b64encode(nonce + ct).decode("ascii")
+
+
+def decrypt_value(ciphertext: str) -> str:
+    """Decrypt a value produced by encrypt_value. Returns '' on any error."""
+    if not ciphertext:
+        return ""
+    try:
+        raw = base64.b64decode(ciphertext)
+        nonce, ct = raw[:12], raw[12:]
+        aesgcm = AESGCM(_settings_enc_key())
+        return aesgcm.decrypt(nonce, ct, None).decode("utf-8")
+    except Exception:
+        return ""

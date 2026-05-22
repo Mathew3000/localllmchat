@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -14,6 +14,17 @@ class LoginRequest(BaseModel):
 class RegisterRequest(BaseModel):
     username: str
     password: str
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 12:
+            raise ValueError("Password must be at least 12 characters")
+        if len(v) > 72:
+            # bcrypt silently truncates at 72 bytes — reject to avoid silent
+            # password truncation that could allow unintended access.
+            raise ValueError("Password must not exceed 72 characters")
+        return v
 
 
 class TokenResponse(BaseModel):

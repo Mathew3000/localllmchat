@@ -25,17 +25,24 @@ import json
 import uuid
 from datetime import datetime, timezone
 
+import jwt
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
-from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import decode_token
+from auth import decode_token, decrypt_value
 from database import AsyncSessionLocal
 from models import Conversation, Message, User, UserSettings
+from routers.settings import _decrypt_settings
 from services.llm import run_generation
 from services.ws_hub import hub
 
 router = APIRouter(tags=["websocket"])
+
+# Maximum WebSocket message size (bytes). Messages larger than this are silently
+# dropped to prevent memory exhaustion from a malicious or buggy client.
+_MAX_WS_MSG_BYTES = 10 * 1024 * 1024  # 10 MB
+# Maximum number of images per message.
+_MAX_IMAGES = 20
 
 
 async def _auth(token: str) -> tuple[User, AsyncSession]:
@@ -53,7 +60,7 @@ async def _auth(token: str) -> tuple[User, AsyncSession]:
         if not user:
             raise ValueError("user not found")
         return user, db
-    except (JWTError, ValueError):
+    except (jwt.InvalidTokenError, ValueError):
         await db.close()
         raise
 
@@ -74,6 +81,14 @@ async def websocket_endpoint(
     try:
         while True:
             raw = await websocket.receive_text()
+
+            # Drop oversized messages immediately.
+            if len(raw.encode("utf-8")) > _MAX_WS_MSG_BYTES:
+                await websocket.send_json(
+                    {"type": "error", "detail": "Message too large"}
+                )
+                continue
+
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
@@ -97,6 +112,10 @@ async def websocket_endpoint(
                 memory_context: str | None = msg.get("memory_context") or None
                 # Client's local datetime string (avoids UTC bias on the server).
                 client_datetime: str | None = msg.get("client_datetime") or None
+
+                # Clamp image count to prevent unbounded memory use.
+                if len(images) > _MAX_IMAGES:
+                    images = images[:_MAX_IMAGES]
 
                 if not conv_id:
                     await websocket.send_json(
@@ -124,9 +143,10 @@ async def websocket_endpoint(
                 conv.updated_at = datetime.now(timezone.utc)
                 await db.commit()
 
-                # Load settings for this user
+                # Load settings for this user and decrypt sensitive fields.
                 us = await db.get(UserSettings, user.id)
-                settings_data = dict(us.data) if us else {}
+                raw_data = dict(us.data) if us else {}
+                settings_data = _decrypt_settings(raw_data)
 
                 # Cancel any in-flight generation for this conversation
                 hub.cancel_task(conv_id)

@@ -1253,6 +1253,12 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Disconnect from the backend and switch back to direct LLM mode.
   Future<void> backendLogout() async {
+    // Revoke the refresh token server-side before tearing down the connection.
+    // This prevents the token from being usable even if it is leaked later.
+    final refreshToken = _settings.backendRefreshToken;
+    if (refreshToken.isNotEmpty && _backend != null) {
+      await _backend!.logout(refreshToken: refreshToken);
+    }
     _disconnectBackend();
     _settings = _settings.copyWith(
       useBackend: false,

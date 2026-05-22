@@ -26,13 +26,39 @@ class User(Base):
     settings: Mapped["UserSettings | None"] = relationship(
         back_populates="user", uselist=False
     )
+    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(back_populates="user")
+
+
+class RefreshToken(Base):
+    """Server-side record for each issued refresh token.
+
+    Enables stateful refresh-token rotation: on every ``/refresh`` call the
+    current row is marked revoked and a new row is inserted.  If a revoked
+    token is presented again (re-use attack) the entire rotation family is
+    revoked, forcing a full re-login on every device.
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    jti: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    # Rotation family — all tokens issued in the same chain share a family_id.
+    family_id: Mapped[str] = mapped_column(String, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+
+    user: Mapped["User"] = relationship(back_populates="refresh_tokens")
 
 
 class UserSettings(Base):
     __tablename__ = "user_settings"
 
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    # Stores the full AppSettings JSON blob from the Flutter app.
+    # Stores the AppSettings JSON blob from the Flutter app.
+    # Sensitive fields (e.g. apiKey) are AES-256-GCM encrypted — see auth.py.
     data: Mapped[dict] = mapped_column(JSON, default=dict)
 
     user: Mapped["User"] = relationship(back_populates="settings")

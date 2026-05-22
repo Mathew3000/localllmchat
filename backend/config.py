@@ -1,15 +1,28 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_INSECURE_DEFAULT = "insecure-default-change-me"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    secret_key: str = "insecure-default-change-me"
+    secret_key: str = _INSECURE_DEFAULT
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
+    # Short-lived access token (30 min) — auto-renewal is handled client-side
+    # via the 30-day refresh token stored securely on the device.
+    access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30  # 30 days
     database_url: str = "sqlite+aiosqlite:////data/db.sqlite"
     registration_enabled: bool = True
+
+    def validate_secret_key(self) -> None:
+        """Call from lifespan — fatal if the secret key is still the insecure default."""
+        if self.secret_key == _INSECURE_DEFAULT:
+            raise RuntimeError(
+                "SECRET_KEY is set to the insecure default value. "
+                "Set SECRET_KEY to a strong random secret before starting the server. "
+                "Generate one with:  openssl rand -hex 32"
+            )
 
 
 settings = Settings()

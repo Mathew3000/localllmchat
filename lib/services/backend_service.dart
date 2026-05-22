@@ -628,6 +628,26 @@ class BackendService {
     }
   }
 
+  // ── REST: Logout ──────────────────────────────────────────────────────────
+
+  /// Revoke [refreshToken] on the server (best-effort — never throws).
+  /// Call this before clearing the stored tokens client-side so the server
+  /// can invalidate the token and detect re-use attacks.
+  Future<void> logout({required String refreshToken}) async {
+    if (refreshToken.isEmpty) return;
+    try {
+      await _httpClient()
+          .post(
+            Uri.parse('$_base/api/auth/logout'),
+            headers: _headers,
+            body: jsonEncode({'refresh_token': refreshToken}),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {
+      // Best-effort — never block a logout on a server error.
+    }
+  }
+
   // ── REST: Settings ────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> fetchSettings() async {
