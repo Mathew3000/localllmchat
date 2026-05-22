@@ -55,6 +55,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _backendConnecting = false;
   String? _backendConnectError;
   bool _backendUsingAway = false;
+  /// Fires ~10 minutes before the access token expires to silently refresh it.
+  Timer? _tokenRefreshTimer;
   /// Tokens that arrived before the local streaming placeholder was ready
   /// (e.g. reconnect or cross-device — generation_start comes before messages
   /// are loaded from the REST API).  Flushed into the placeholder as soon as
@@ -909,27 +911,33 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── Token refresh helpers ─────────────────────────────────────────────────
 
-  /// Decode the JWT payload (without signature verification) to check the
-  /// `exp` claim.  Returns true if the token is expired or unparseable.
-  static bool _isTokenExpired(String token) {
+  /// Decode the JWT payload (without signature verification) and return the
+  /// `exp` claim as a [DateTime].  Returns null when the token cannot be
+  /// parsed or has no `exp` field.
+  static DateTime? _tokenExpiry(String token) {
     try {
       final parts = token.split('.');
-      if (parts.length != 3) return true;
+      if (parts.length != 3) return null;
       // JWT uses base64url without padding — normalize to standard base64.
       final padded = base64Url.normalize(parts[1]);
       final payload = utf8.decode(base64Url.decode(padded));
       final data = jsonDecode(payload) as Map<String, dynamic>;
       final exp = data['exp'] as int?;
-      if (exp == null) return false;
-      final expiry =
-          DateTime.fromMillisecondsSinceEpoch(exp * 1000, isUtc: true);
-      // Add a 30-second buffer so we refresh slightly before the server rejects.
-      return DateTime.now().toUtc().isAfter(
-            expiry.subtract(const Duration(seconds: 30)),
-          );
+      if (exp == null) return null;
+      return DateTime.fromMillisecondsSinceEpoch(exp * 1000, isUtc: true);
     } catch (_) {
-      return false; // If we can't parse it, let the server decide.
+      return null;
     }
+  }
+
+  /// Returns true if [token] has expired (or expires within 30 s).
+  /// Returns false when the token cannot be parsed — let the server decide.
+  static bool _isTokenExpired(String token) {
+    final expiry = _tokenExpiry(token);
+    if (expiry == null) return false;
+    return DateTime.now().toUtc().isAfter(
+          expiry.subtract(const Duration(seconds: 30)),
+        );
   }
 
   /// Try to refresh the backend access token using the stored refresh token.
@@ -953,6 +961,52 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       return false;
     }
+  }
+
+  /// Schedules a [Timer] to fire ~10 minutes before the current access token
+  /// expires, so the app can silently refresh it without any manual re-login.
+  ///
+  /// Safe to call multiple times — cancels the previous timer first.
+  void _scheduleTokenRefresh() {
+    _tokenRefreshTimer?.cancel();
+    _tokenRefreshTimer = null;
+
+    final token = _settings.backendToken;
+    if (token.isEmpty || _settings.backendRefreshToken.isEmpty) return;
+
+    final expiry = _tokenExpiry(token);
+    if (expiry == null) return;
+
+    // Fire 10 minutes before expiry so there is plenty of headroom.
+    final fireAt = expiry.subtract(const Duration(minutes: 10));
+    final delay = fireAt.difference(DateTime.now().toUtc());
+
+    if (delay.isNegative) {
+      // Token expires in less than 10 minutes (or already expired) — refresh now.
+      _proactiveTokenRefresh();
+      return;
+    }
+
+    _tokenRefreshTimer = Timer(delay, _proactiveTokenRefresh);
+  }
+
+  /// Called by [_tokenRefreshTimer] (and directly when the token is nearly
+  /// expired at connect-time).  Silently refreshes the access token and
+  /// updates the live [BackendService] instance so REST calls keep working
+  /// without a full reconnect.
+  Future<void> _proactiveTokenRefresh() async {
+    final refreshed = await _tryRefreshBackendToken();
+    if (refreshed) {
+      // Push the new token into the live service so future REST calls and the
+      // next WebSocket reconnect both use it immediately.
+      _backend?.updateToken(_settings.backendToken);
+      // Schedule the next renewal for the freshly-issued token.
+      _scheduleTokenRefresh();
+    }
+    // If the refresh token itself has expired the user will hit a 401 on the
+    // next server call.  That triggers the existing _connectBackend() auth-error
+    // path, which shows "Session expired — please log in again." — no extra
+    // handling needed here.
   }
 
   Future<void> _connectBackend() async {
@@ -1054,6 +1108,11 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       // and must be reached by the client — fetch their tools now so they can
       // be relayed through the WebSocket during generation.
       _fetchAllMcpTools(localOnlyOnly: true);
+
+      // Schedule the proactive token-renewal timer now that we are fully
+      // connected.  The timer fires ~10 min before the 7-day access token
+      // expires so the user never needs to manually log out and back in.
+      _scheduleTokenRefresh();
     } on BackendAuthException {
       // The server rejected our access token (401/403).  Try once to refresh.
       _backend?.dispose();
@@ -1106,6 +1165,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _disconnectBackend() {
+    _tokenRefreshTimer?.cancel();
+    _tokenRefreshTimer = null;
     _backendEventSub?.cancel();
     _backendEventSub = null;
     _backend?.dispose();

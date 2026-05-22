@@ -135,7 +135,7 @@ class TotpSetup {
 
 class BackendService {
   final String baseUrl;
-  final String token;
+  String _token;
   final bool allowSelfSigned;
 
   IOWebSocketChannel? _channel;
@@ -155,11 +155,21 @@ class BackendService {
   Stream<BackendEvent> get events => _events.stream;
   bool get isConnected => _channel != null;
 
+  /// Current access token. Mutable so [updateToken] can swap in a refreshed
+  /// token without tearing down the existing WebSocket connection.
+  String get token => _token;
+
+  /// Replace the access token used for all REST calls and future WebSocket
+  /// connections.  The current WebSocket session stays open — it was
+  /// authenticated with the previous token and the server keeps it alive.
+  void updateToken(String newToken) => _token = newToken;
+
   BackendService({
     required this.baseUrl,
-    required this.token,
+    required String token,
     this.allowSelfSigned = false,
-  }) : _restClient = _makeClient(allowSelfSigned);
+  })  : _token = token,
+        _restClient = _makeClient(allowSelfSigned);
 
   // ── URL helpers ───────────────────────────────────────────────────────────
 
