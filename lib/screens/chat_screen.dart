@@ -491,6 +491,9 @@ class _MessageList extends StatelessWidget {
                         msg.id,
                         andFollowingResponse: withResponse,
                       ),
+              onRegenerate: p.isStreaming
+                  ? null
+                  : () => p.regenerateFrom(msg),
             );
           },
         );

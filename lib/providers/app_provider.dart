@@ -1378,6 +1378,59 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Deletes [message] and everything after it, then re-sends the nearest
+  /// preceding user message (or the message itself if it is a user message).
+  /// No-op when a generation is already in progress.
+  Future<void> regenerateFrom(Message message) async {
+    if (_isStreaming) return;
+    final conv = _activeConversation;
+    if (conv == null) return;
+
+    final msgs = conv.messages;
+    final idx = msgs.indexWhere((m) => m.id == message.id);
+    if (idx < 0) return;
+
+    // Determine the user text to re-send and the index from which to delete.
+    String userText;
+    List<String> userImages;
+    int deleteFrom;
+
+    if (message.role == Role.user) {
+      userText = message.content;
+      userImages = message.images;
+      deleteFrom = idx;
+    } else {
+      // Find the nearest preceding user message.
+      String? found;
+      List<String> foundImages = const [];
+      for (int i = idx - 1; i >= 0; i--) {
+        if (msgs[i].role == Role.user) {
+          found = msgs[i].content;
+          foundImages = msgs[i].images;
+          break;
+        }
+      }
+      if (found == null) return;
+      userText = found;
+      userImages = foundImages;
+      deleteFrom = idx; // keep the user message; delete the assistant turn only
+    }
+
+    // Delete from deleteFrom to end.
+    final toDelete = msgs.sublist(deleteFrom).map((m) => m.id).toList();
+    msgs.removeRange(deleteFrom, msgs.length);
+    if (_settings.useBackend && _backend != null) {
+      for (final mid in toDelete) {
+        _backend!.deleteMessage(conv.id, mid).catchError((_) {});
+      }
+    } else {
+      _persistConversations();
+    }
+    notifyListeners();
+
+    await sendMessage(userText, images: userImages);
+  }
+
   void deleteConversation(String id) {
     _conversations.removeWhere((c) => c.id == id);
     if (_activeConversation?.id == id) {

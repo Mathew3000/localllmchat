@@ -155,6 +155,8 @@ class MessageBubble extends StatelessWidget {
   /// [withResponse] is true when a user message is deleted together with
   /// the following AI response.
   final void Function(bool withResponse)? onDelete;
+  /// Called to regenerate the response from this message onwards.
+  final VoidCallback? onRegenerate;
 
   const MessageBubble({
     super.key,
@@ -163,6 +165,7 @@ class MessageBubble extends StatelessWidget {
     this.assistantBubbleColor,
     this.highlightColor,
     this.onDelete,
+    this.onRegenerate,
   });
 
   @override
@@ -193,6 +196,8 @@ class MessageBubble extends StatelessWidget {
               Flexible(
                 child: GestureDetector(
                   onLongPress: () => _copyToClipboard(context),
+                  onSecondaryTapUp: (d) =>
+                      _showContextMenu(context, d.globalPosition),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 14, vertical: 10),
@@ -423,7 +428,76 @@ class MessageBubble extends StatelessWidget {
       ),
     );
   }
+
+  Future<void> _showContextMenu(
+      BuildContext context, Offset globalPosition) async {
+    final isUser = message.role == Role.user;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final position = RelativeRect.fromRect(
+      Rect.fromLTWH(
+          globalPosition.dx, globalPosition.dy, 1, 1),
+      Offset.zero & overlay.size,
+    );
+
+    final items = <PopupMenuEntry<_MenuAction>>[
+      const PopupMenuItem(
+        value: _MenuAction.copy,
+        child: ListTile(
+          leading: Icon(Icons.copy_outlined),
+          title: Text('Copy'),
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+        ),
+      ),
+      if (onRegenerate != null) ...[
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          value: _MenuAction.regenerate,
+          child: ListTile(
+            leading: const Icon(Icons.refresh_rounded),
+            title: Text(isUser ? 'Resend' : 'Regenerate'),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+        ),
+      ],
+      if (onDelete != null && !message.isStreaming) ...[
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: _MenuAction.delete,
+          child: ListTile(
+            leading: Icon(Icons.delete_outline),
+            title: Text('Delete'),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+        ),
+      ],
+    ];
+
+    final result = await showMenu<_MenuAction>(
+      context: context,
+      position: position,
+      items: items,
+      elevation: 4,
+    );
+
+    if (!context.mounted) return;
+    switch (result) {
+      case _MenuAction.copy:
+        _copyToClipboard(context);
+      case _MenuAction.regenerate:
+        onRegenerate?.call();
+      case _MenuAction.delete:
+        _confirmDelete(context, isUser);
+      case null:
+        break;
+    }
+  }
 }
+
+enum _MenuAction { copy, regenerate, delete }
 
 // ── Assistant content (segments) ─────────────────────────────────────────────
 
