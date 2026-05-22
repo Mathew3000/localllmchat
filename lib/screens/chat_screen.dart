@@ -618,47 +618,106 @@ class _ConversationDrawer extends StatelessWidget {
 
 // ── Shared conversation list (used in both drawer and desktop sidebar) ─────────
 
-class _ConversationListView extends StatelessWidget {
+class _ConversationListView extends StatefulWidget {
   /// When true, tapping a conversation calls Navigator.pop to close the drawer.
   final bool closeDrawer;
   const _ConversationListView({required this.closeDrawer});
+
+  @override
+  State<_ConversationListView> createState() => _ConversationListViewState();
+}
+
+class _ConversationListViewState extends State<_ConversationListView> {
+  final _searchController = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Consumer<AppProvider>(
       builder: (_, p, __) {
-        final visible = p.visibleConversations;
-        if (visible.isEmpty) {
-          return Center(
-            child: Text(
-              'No conversations yet',
-              style: TextStyle(color: cs.onSurfaceVariant),
-            ),
-          );
-        }
-        return ListView.builder(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          itemCount: visible.length,
-          itemBuilder: (_, i) {
-            final conv = visible[i];
-            final isActive = conv.id == p.activeConversation?.id;
-            return _ConversationTile(
-              conv: conv,
-              isActive: isActive,
-              showSecretBadge: p.secretsUnlocked && conv.isSecret,
-              onTap: () {
-                p.selectConversation(conv);
-                if (closeDrawer) Navigator.pop(context);
-              },
-              onDelete: () => p.deleteConversation(conv.id),
-              onRename: (title) => p.renameConversation(conv.id, title),
-              onToggleSecret:
-                  p.hasSecretPassword && p.secretsUnlocked
-                      ? () => p.toggleConversationSecret(conv.id)
+        final allVisible = p.visibleConversations;
+        final q = _query.trim().toLowerCase();
+        final visible = q.isEmpty
+            ? allVisible
+            : allVisible
+                .where((c) => c.title.toLowerCase().contains(q))
+                .toList();
+
+        return Column(
+          children: [
+            // ── Search field ───────────────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
+              child: TextField(
+                controller: _searchController,
+                onChanged: (v) => setState(() => _query = v),
+                decoration: InputDecoration(
+                  hintText: 'Search chats…',
+                  hintStyle: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
+                  prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                  suffixIcon: _query.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.close_rounded, size: 18),
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() => _query = '');
+                          },
+                        )
                       : null,
-            );
-          },
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    borderSide: BorderSide.none,
+                  ),
+                  filled: true,
+                  fillColor: cs.surfaceContainerHigh,
+                ),
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+            // ── Conversation list ──────────────────────────────────────────
+            Expanded(
+              child: visible.isEmpty
+                  ? Center(
+                      child: Text(
+                        q.isEmpty ? 'No conversations yet' : 'No results',
+                        style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      itemCount: visible.length,
+                      itemBuilder: (_, i) {
+                        final conv = visible[i];
+                        final isActive = conv.id == p.activeConversation?.id;
+                        return _ConversationTile(
+                          conv: conv,
+                          isActive: isActive,
+                          showSecretBadge: p.secretsUnlocked && conv.isSecret,
+                          onTap: () {
+                            p.selectConversation(conv);
+                            if (widget.closeDrawer) Navigator.pop(context);
+                          },
+                          onDelete: () => p.deleteConversation(conv.id),
+                          onRename: (title) =>
+                              p.renameConversation(conv.id, title),
+                          onToggleSecret: p.hasSecretPassword &&
+                                  p.secretsUnlocked
+                              ? () => p.toggleConversationSecret(conv.id)
+                              : null,
+                        );
+                      },
+                    ),
+            ),
+          ],
         );
       },
     );
