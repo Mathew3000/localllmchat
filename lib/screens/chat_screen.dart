@@ -26,6 +26,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
   String? _lastActiveConvId;
+  bool _sidebarVisible = true;
 
   @override
   void initState() {
@@ -131,12 +132,28 @@ class _ChatScreenState extends State<ChatScreen> {
             backgroundColor: bgColor,
             body: Row(
               children: [
-                // ── Permanent sidebar ──────────────────────────────────────
-                SizedBox(
-                  width: _kSidebarWidth,
-                  child: _DesktopSidebar(scrollToBottom: _scrollToBottom),
+                // ── Collapsible sidebar ────────────────────────────────────
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeInOut,
+                  child: SizedBox(
+                    width: _sidebarVisible ? _kSidebarWidth : 0,
+                    child: OverflowBox(
+                      alignment: Alignment.topLeft,
+                      minWidth: _kSidebarWidth,
+                      maxWidth: _kSidebarWidth,
+                      child: _DesktopSidebar(scrollToBottom: _scrollToBottom),
+                    ),
+                  ),
                 ),
-                const VerticalDivider(width: 1, thickness: 1),
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeInOut,
+                  child: SizedBox(
+                    width: _sidebarVisible ? 1 : 0,
+                    child: const VerticalDivider(width: 1, thickness: 1),
+                  ),
+                ),
                 // ── Chat area ─────────────────────────────────────────────
                 Expanded(
                   child: Column(
@@ -145,6 +162,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         title: p.activeConversation?.title ?? 'LoomChat',
                         actions: actions,
                         bgColor: bgColor,
+                        sidebarVisible: _sidebarVisible,
+                        onToggleSidebar: () => setState(
+                            () => _sidebarVisible = !_sidebarVisible),
                       ),
                       Expanded(child: chatPanel),
                     ],
@@ -299,10 +319,14 @@ class _DesktopChatHeader extends StatelessWidget {
   final String title;
   final List<Widget> actions;
   final Color? bgColor;
+  final bool sidebarVisible;
+  final VoidCallback onToggleSidebar;
 
   const _DesktopChatHeader({
     required this.title,
     required this.actions,
+    required this.sidebarVisible,
+    required this.onToggleSidebar,
     this.bgColor,
   });
 
@@ -324,7 +348,13 @@ class _DesktopChatHeader extends StatelessWidget {
         ),
         child: Row(
           children: [
-            const SizedBox(width: 12),
+            IconButton(
+              icon: Icon(sidebarVisible
+                  ? Icons.menu_open_rounded
+                  : Icons.menu_rounded),
+              tooltip: sidebarVisible ? 'Hide sidebar' : 'Show sidebar',
+              onPressed: onToggleSidebar,
+            ),
             Expanded(
               child: Text(
                 title,
