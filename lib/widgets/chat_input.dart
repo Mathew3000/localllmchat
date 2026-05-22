@@ -709,19 +709,39 @@ class _ContextRing extends StatelessWidget {
             ? cs.tertiary
             : cs.error;
 
+    final label = '${_fmt(promptTokens)}\n/ ${_fmt(contextWindowTokens)}';
+
     return Tooltip(
-      message: '${_fmt(promptTokens)} / ${_fmt(contextWindowTokens)}',
-      triggerMode: TooltipTriggerMode.tap,
+      message: '${_fmt(promptTokens)} / ${_fmt(contextWindowTokens)} tokens used',
       child: Padding(
         padding: const EdgeInsets.only(bottom: 2),
         child: SizedBox(
-          width: 28,
-          height: 28,
-          child: CircularProgressIndicator(
-            value: ratio,
-            strokeWidth: 3,
-            backgroundColor: cs.surfaceContainerHighest,
-            color: color,
+          width: 44,
+          height: 44,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              SizedBox(
+                width: 44,
+                height: 44,
+                child: CircularProgressIndicator(
+                  value: ratio,
+                  strokeWidth: 3,
+                  backgroundColor: cs.surfaceContainerHighest,
+                  color: color,
+                ),
+              ),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 8.5,
+                  height: 1.2,
+                  color: color,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
         ),
       ),
