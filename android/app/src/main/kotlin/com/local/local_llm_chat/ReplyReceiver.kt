@@ -27,7 +27,7 @@ class ReplyReceiver : BroadcastReceiver() {
         }
 
         // ── Voice reply path ──────────────────────────────────────────────────
-        val bundle: android.os.Bundle? = RemoteInput.getResultsFromIntent(intent)
+        val bundle = RemoteInput.getResultsFromIntent(intent)
         val replyText = bundle?.getCharSequence(AutoNotificationHelper.KEY_REPLY)
             ?.toString()?.trim()
             ?: return  // Nothing to forward
