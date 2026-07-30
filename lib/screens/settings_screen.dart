@@ -16,6 +16,7 @@ import '../providers/app_provider.dart';
 import '../version.dart';
 import '../widgets/color_picker.dart';
 import 'mcp_servers_screen.dart';
+import 'personality_settings_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -390,6 +391,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 16),
+          const _SectionHeader(title: 'Personalities'),
+          const _PersonalitiesNavTile(),
           const SizedBox(height: 16),
           const _SectionHeader(title: 'MCP Tools'),
           const _McpNavTile(),
@@ -2356,6 +2360,48 @@ class _FileMcpTile extends StatelessWidget {
               // Clear any active folder when the feature is disabled.
               if (!v) provider.setFileMcpFolder(null);
             },
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ── Personalities nav tile ────────────────────────────────────────────────────
+
+class _PersonalitiesNavTile extends StatelessWidget {
+  const _PersonalitiesNavTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppProvider>(
+      builder: (_, provider, __) {
+        final count = provider.settings.personalities.length;
+        final defaultId = provider.settings.defaultPersonalityId;
+        final defaultName = provider.settings.personalities
+            .where((p) => p.id == defaultId)
+            .map((p) => p.name)
+            .firstOrNull;
+
+        final subtitle = count == 0
+            ? 'No personalities'
+            : '$count personalit${count == 1 ? 'y' : 'ies'}${defaultName != null ? ' · default: $defaultName' : ''}';
+
+        return Card(
+          margin: EdgeInsets.zero,
+          child: ListTile(
+            leading: Icon(
+              Icons.person_outlined,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            title: const Text('Personalities'),
+            subtitle: Text(subtitle),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => const PersonalitySettingsScreen()),
+            ),
           ),
         );
       },

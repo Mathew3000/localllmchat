@@ -7,6 +7,7 @@ import '../widgets/message_bubble.dart';
 import '../widgets/tool_bubble.dart';
 import '../widgets/chat_input.dart';
 import '../widgets/color_picker.dart';
+import 'personality_settings_screen.dart';
 import 'settings_screen.dart';
 
 // Width threshold above which the permanent sidebar is shown instead of a drawer.
@@ -509,31 +510,150 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
+    return Consumer<AppProvider>(
+      builder: (context, p, _) {
+        final personality = p.activePersonality;
+        final personalities = p.settings.personalities;
+
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.auto_awesome_rounded,
+                    size: 64, color: cs.primary.withValues(alpha: 0.6)),
+                const SizedBox(height: 16),
+                Text(
+                  'Start a conversation',
+                  style: Theme.of(context)
+                      .textTheme
+                      .headlineSmall
+                      ?.copyWith(color: cs.onSurface),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Connected to:\n$activeUrl',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: cs.onSurfaceVariant),
+                ),
+                // ── Personality picker ───────────────────────────────────
+                if (personalities.isNotEmpty) ...[
+                  const SizedBox(height: 20),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(20),
+                    onTap: personalities.length == 1
+                        ? null
+                        : () => _showPersonalityPicker(context, p),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: cs.outline),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.person_outline_rounded,
+                              size: 16, color: cs.primary),
+                          const SizedBox(width: 6),
+                          Text(
+                            personality?.name ?? 'No personality',
+                            style: TextStyle(
+                                color: cs.onSurface, fontSize: 13),
+                          ),
+                          if (personalities.length > 1) ...[
+                            const SizedBox(width: 4),
+                            Icon(Icons.arrow_drop_down,
+                                size: 18, color: cs.onSurfaceVariant),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showPersonalityPicker(BuildContext context, AppProvider p) {
+    final personalities = p.settings.personalities;
+    final current = p.activePersonality?.id;
+
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.auto_awesome_rounded,
-                size: 64, color: cs.primary.withValues(alpha: 0.6)),
-            const SizedBox(height: 16),
-            Text(
-              'Start a conversation',
-              style: Theme.of(context)
-                  .textTheme
-                  .headlineSmall
-                  ?.copyWith(color: cs.onSurface),
+            Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  Text('Select personality',
+                      style: Theme.of(ctx).textTheme.titleMedium),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              const PersonalitySettingsScreen(),
+                        ),
+                      );
+                    },
+                    child: const Text('Manage'),
+                  ),
+                ],
+              ),
             ),
+            const Divider(height: 1),
+            ...personalities.map((personality) => ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor:
+                        Theme.of(ctx).colorScheme.primaryContainer,
+                    radius: 16,
+                    child: Text(
+                      personality.name.isNotEmpty
+                          ? personality.name[0].toUpperCase()
+                          : '?',
+                      style: TextStyle(
+                        color: Theme.of(ctx)
+                            .colorScheme
+                            .onPrimaryContainer,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  title: Text(personality.name),
+                  subtitle: Text(
+                    personality.systemPrompt,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: personality.id == current
+                      ? Icon(Icons.check_rounded,
+                          color: Theme.of(ctx).colorScheme.primary)
+                      : null,
+                  onTap: () {
+                    p.setConversationPersonality(personality.id);
+                    Navigator.pop(ctx);
+                  },
+                )),
             const SizedBox(height: 8),
-            Text(
-              'Connected to:\n$activeUrl',
-              textAlign: TextAlign.center,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: cs.onSurfaceVariant),
-            ),
           ],
         ),
       ),
