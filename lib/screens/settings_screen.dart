@@ -42,14 +42,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int? _defaultAssistantBubbleColor;
   int? _highlightColor;
 
+  AppSettings? _lastKnownSettings;
+  late AppProvider _provider;
+
   @override
   void initState() {
     super.initState();
-    final s = context.read<AppProvider>().settings;
-    _baseUrlHomeController = TextEditingController(text: s.baseUrlHome);
-    _baseUrlAwayController = TextEditingController(text: s.baseUrlAway);
-    _apiKeyController = TextEditingController(text: s.apiKey);
-    _systemPromptController = TextEditingController(text: s.systemPrompt);
+    _provider = context.read<AppProvider>();
+    _baseUrlHomeController = TextEditingController();
+    _baseUrlAwayController = TextEditingController();
+    _apiKeyController = TextEditingController();
+    _systemPromptController = TextEditingController();
+    _temperature = 0.7;
+    _maxTokens = 2048;
+    _contextWindowTokens = 32768;
+    _allowSelfSigned = false;
+    _requestTimeoutSeconds = 300;
+    _loadFromSettings(_provider.settings);
+    _provider.addListener(_onProviderChanged);
+  }
+
+  void _loadFromSettings(AppSettings s) {
+    _lastKnownSettings = s;
+    _baseUrlHomeController.text = s.baseUrlHome;
+    _baseUrlAwayController.text = s.baseUrlAway;
+    _apiKeyController.text = s.apiKey;
+    _systemPromptController.text = s.systemPrompt;
     _temperature = s.temperature;
     _maxTokens = s.maxTokens;
     _contextWindowTokens = s.contextWindowTokens;
@@ -62,8 +80,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _highlightColor = s.highlightColor;
   }
 
+  void _onProviderChanged() {
+    if (!mounted) return;
+    final s = _provider.settings;
+    if (!identical(s, _lastKnownSettings)) {
+      setState(() => _loadFromSettings(s));
+    }
+  }
+
   @override
   void dispose() {
+    _provider.removeListener(_onProviderChanged);
     _baseUrlHomeController.dispose();
     _baseUrlAwayController.dispose();
     _apiKeyController.dispose();
@@ -73,11 +100,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _save() async {
     final provider = context.read<AppProvider>();
-    // Preserve secretPasswordHash — it's managed separately via dialogs.
-    // Preserve fields that are managed outside this form.
     final s = provider.settings;
+    // Use copyWith so any fields not managed by this form (personalities,
+    // mcpServers, sync tokens, backend credentials, etc.) are preserved.
     await provider.updateSettings(
-      AppSettings(
+      s.copyWith(
         baseUrlHome: _baseUrlHomeController.text.trim(),
         baseUrlAway: _baseUrlAwayController.text.trim(),
         apiKey: _apiKeyController.text.trim(),
@@ -85,33 +112,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         systemPrompt: _systemPromptController.text,
         temperature: _temperature,
         maxTokens: _maxTokens,
-        secretPasswordHash: s.secretPasswordHash,
         backgroundColor: _globalBgColor,
         defaultUserBubbleColor: _defaultUserBubbleColor,
         defaultAssistantBubbleColor: _defaultAssistantBubbleColor,
         highlightColor: _highlightColor,
         requestTimeoutSeconds: _requestTimeoutSeconds,
-        mcpServers: s.mcpServers,
-        syncUrl: s.syncUrl,
-        syncUsername: s.syncUsername,
-        syncAccessToken: s.syncAccessToken,
-        syncRefreshToken: s.syncRefreshToken,
-        syncLastAt: s.syncLastAt,
-        autoSyncEnabled: s.autoSyncEnabled,
-        autoSyncIntervalMinutes: s.autoSyncIntervalMinutes,
-        injectDateTime: s.injectDateTime,
-        preserveThinking: s.preserveThinking,
         contextWindowTokens: _contextWindowTokens,
-        debugLogging: s.debugLogging,
-        debugLogPath: s.debugLogPath,
-        useBackend: s.useBackend,
-        backendUrl: s.backendUrl,
-        backendToken: s.backendToken,
-        backendRefreshToken: s.backendRefreshToken,
-        backendAllowSelfSigned: s.backendAllowSelfSigned,
-        backendAwayUrl: s.backendAwayUrl,
         allowSelfSigned: _allowSelfSigned,
-        fileMcpEnabled: s.fileMcpEnabled,
       ),
     );
     if (mounted) {

@@ -1210,6 +1210,16 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Load conversations from the backend
       final convs = await _backend!.fetchConversations();
       _conversations = convs;
+      // personalityId is client-only metadata not stored on the backend.
+      // Assign the default personality to any conversation that lacks one.
+      final defaultPid = _settings.defaultPersonalityId;
+      if (defaultPid.isNotEmpty) {
+        for (final conv in _conversations) {
+          if (conv.personalityId == null || conv.personalityId!.isEmpty) {
+            conv.personalityId = defaultPid;
+          }
+        }
+      }
       final visibleConvs = convs.where((c) => !c.isSecret).toList();
       _activeConversation = visibleConvs.isNotEmpty ? visibleConvs.first : null;
 
