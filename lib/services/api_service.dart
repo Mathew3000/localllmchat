@@ -73,14 +73,24 @@ class ApiService {
       'model': settings.selectedModel,
       'messages': [
         {
+          'role': 'system',
+          'content':
+              'You output only a single short title, nothing else. No thinking, '
+              'no reasoning steps, no explanation, no quotes. End your reply with '
+              "exactly one line in the format 'TITLE: <the title>' and nothing "
+              'after it.',
+        },
+        {
           'role': 'user',
           'content':
-              'Generate a conversation title for a conversation that starts with '
-              '`$firstMessage`. Reply with only the title, no quotes.',
+              'Generate a conversation title (max 6 words) for a conversation '
+              'that starts with: `$firstMessage`',
         }
       ],
       'stream': false,
-      'max_tokens': 20,
+      'max_tokens': 200,
+      'enable_thinking': false,
+      'chat_template_kwargs': {'enable_thinking': false},
     });
     DebugLogger.instance.logRequest('LLM', 'POST', uri.toString(), body);
     final response = await _client
@@ -96,10 +106,36 @@ class ApiService {
     if (choices.isEmpty) throw Exception('fetchTitle: empty choices');
     final msg = (choices[0] as Map<String, dynamic>)['message']
         as Map<String, dynamic>;
-    var title = (msg['content'] as String? ?? '').trim();
-    title = title.replaceAll(RegExp(r'''^["'`]+|["'`]+$'''), '');
+    final raw = (msg['content'] as String? ?? msg['reasoning_content'] as String? ?? '');
+    var title = _extractTitle(raw);
     if (title.length > 60) title = '${title.substring(0, 60).trimRight()}…';
     return title;
+  }
+
+  /// Pulls the actual title out of a raw LLM reply. Reasoning models don't
+  /// reliably honor "no thinking" instructions — some emit proper
+  /// `<think>…</think>` blocks, others dump a chain-of-thought preamble
+  /// ("Thinking Process:\n1. ...") as plain text before the answer. We ask
+  /// the model to end with a `TITLE: ...` marker line and prefer that; if
+  /// missing, fall back to the last non-empty line so a leading reasoning
+  /// dump doesn't become the title.
+  static String _extractTitle(String raw) {
+    var text = raw.trim();
+    text = text.replaceAll(RegExp(r'<think>[\s\S]*?</think>'), '');
+    text = text.replaceAll(RegExp(r'<think>[\s\S]*'), '');
+
+    final matches =
+        RegExp(r'^\s*title\s*:\s*(.+?)\s*$', caseSensitive: false, multiLine: true)
+            .allMatches(text)
+            .toList();
+    String candidate;
+    if (matches.isNotEmpty) {
+      candidate = matches.last.group(1) ?? '';
+    } else {
+      final lines = text.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+      candidate = lines.isNotEmpty ? lines.last : text;
+    }
+    return candidate.trim().replaceAll(RegExp(r'''^["'`]+|["'`]+$'''), '');
   }
 
   Future<List<String>> fetchModels() async {

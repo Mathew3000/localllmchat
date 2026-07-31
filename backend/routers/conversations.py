@@ -189,6 +189,35 @@ class GenerateTitleRequest(BaseModel):
     first_message: str
 
 
+def _extract_title(raw: str) -> str:
+    """Pull the actual title out of a raw LLM reply.
+
+    Reasoning models don't reliably honor "no thinking" instructions — some
+    emit proper <think>...</think> blocks, others just dump a chain-of-thought
+    preamble ("Thinking Process:\n1. ...") as plain text before the answer.
+    We ask the model to end with a "TITLE: ..." marker line and prefer that;
+    if it's missing, fall back to the last non-empty line so a leading
+    reasoning dump doesn't become the title.
+    """
+    text = raw.strip()
+    # Strip any <think>…</think> blocks the model may have emitted.
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text)
+    text = re.sub(r"<think>[\s\S]*", "", text)  # unclosed block
+
+    # Prefer an explicit "TITLE: ..." marker — take the last match in case
+    # the model echoes the instruction earlier in a reasoning block.
+    matches = re.findall(r"(?im)^\s*title\s*:\s*(.+?)\s*$", text)
+    if matches:
+        candidate = matches[-1]
+    else:
+        # No marker: assume the real answer is the last non-empty line,
+        # since reasoning preambles precede the final answer.
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        candidate = lines[-1] if lines else text
+
+    return candidate.strip().strip("\"'`")
+
+
 @router.post("/{conv_id}/generate-title")
 async def generate_title(
     conv_id: str,
@@ -233,13 +262,15 @@ async def generate_title(
                         "role": "system",
                         "content": (
                             "You output only a single short title, nothing else. "
-                            "No thinking, no reasoning steps, no explanation, no quotes."
+                            "No thinking, no reasoning steps, no explanation, no quotes. "
+                            "End your reply with exactly one line in the format "
+                            "'TITLE: <the title>' and nothing after it."
                         ),
                     },
                     {"role": "user", "content": prompt},
                 ],
                 "stream": False,
-                "max_tokens": 20,
+                "max_tokens": 200,
                 # Disable thinking mode for models that support this flag
                 # (e.g. Qwen3 on vLLM). Ignored by other backends.
                 "enable_thinking": False,
@@ -258,11 +289,7 @@ async def generate_title(
     except (KeyError, IndexError, ValueError):
         raise HTTPException(status_code=502, detail="Unexpected LLM response")
 
-    # Strip any <think>…</think> blocks the model may have emitted.
-    raw = re.sub(r"<think>[\s\S]*?</think>", "", raw)
-    raw = re.sub(r"<think>[\s\S]*", "", raw)  # unclosed block
-
-    title = raw.strip().strip("\"'`")
+    title = _extract_title(raw)
     if not title:
         raise HTTPException(status_code=502, detail="LLM returned empty title")
     if len(title) > 60:
