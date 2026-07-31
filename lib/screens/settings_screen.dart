@@ -29,7 +29,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _baseUrlHomeController;
   late TextEditingController _baseUrlAwayController;
   late TextEditingController _apiKeyController;
-  late TextEditingController _systemPromptController;
   late double _temperature;
   late int _maxTokens;
   late int _contextWindowTokens;
@@ -52,7 +51,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _baseUrlHomeController = TextEditingController();
     _baseUrlAwayController = TextEditingController();
     _apiKeyController = TextEditingController();
-    _systemPromptController = TextEditingController();
     _temperature = 0.7;
     _maxTokens = 2048;
     _contextWindowTokens = 32768;
@@ -67,7 +65,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _baseUrlHomeController.text = s.baseUrlHome;
     _baseUrlAwayController.text = s.baseUrlAway;
     _apiKeyController.text = s.apiKey;
-    _systemPromptController.text = s.systemPrompt;
     _temperature = s.temperature;
     _maxTokens = s.maxTokens;
     _contextWindowTokens = s.contextWindowTokens;
@@ -94,7 +91,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _baseUrlHomeController.dispose();
     _baseUrlAwayController.dispose();
     _apiKeyController.dispose();
-    _systemPromptController.dispose();
     super.dispose();
   }
 
@@ -109,7 +105,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         baseUrlAway: _baseUrlAwayController.text.trim(),
         apiKey: _apiKeyController.text.trim(),
         selectedModel: _selectedModel ?? '',
-        systemPrompt: _systemPromptController.text,
         temperature: _temperature,
         maxTokens: _maxTokens,
         backgroundColor: _globalBgColor,
@@ -340,35 +335,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 value: _requestTimeoutSeconds,
                 onChanged: (v) => setState(() => _requestTimeoutSeconds = v),
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          const _SectionHeader(title: 'System Prompt'),
-          _SettingsCard(
-            children: [
-              TextField(
-                controller: _systemPromptController,
-                maxLines: 6,
-                minLines: 3,
-                decoration: const InputDecoration(
-                  hintText:
-                      'You are a helpful, harmless, and honest AI assistant.',
-                  border: InputBorder.none,
-                  contentPadding:
-                      EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                ),
-              ),
               const Divider(height: 1),
               Consumer<AppProvider>(
                 builder: (_, provider, __) => SwitchListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   secondary: const Icon(Icons.schedule_rounded),
                   title: const Text('Inject date & time'),
                   subtitle: Text(
                     'Appends the current date and time to the system prompt',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurfaceVariant,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                   ),
                   value: provider.settings.injectDateTime,
@@ -380,14 +357,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Divider(height: 1),
               Consumer<AppProvider>(
                 builder: (_, provider, __) => SwitchListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   secondary: const Icon(Icons.psychology_outlined),
                   title: const Text('Preserve thinking history'),
                   subtitle: Text(
                     'Passes reasoning tokens back to the model in subsequent turns (Qwen3, DeepSeek-R1)',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurfaceVariant,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                   ),
                   value: provider.settings.preserveThinking,
@@ -407,8 +384,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 8),
           const _FileMcpTile(),
           const SizedBox(height: 16),
-          const _SectionHeader(title: 'Appearance'),
-          _SettingsCard(
+          _ExpandableSection(
+            title: 'Appearance',
             children: [
               _ColorSection(
                 icon: Icons.format_paint_outlined,
@@ -442,9 +419,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Privacy'),
           const _SecretChatsCard(),
-          const SizedBox(height: 16),
-          const _SectionHeader(title: 'Sync'),
-          const _SyncCard(),
+          Consumer<AppProvider>(
+            builder: (_, provider, __) {
+              if (provider.settings.useBackend) return const SizedBox.shrink();
+              return const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(height: 16),
+                  _SectionHeader(title: 'Sync'),
+                  _SyncCard(),
+                ],
+              );
+            },
+          ),
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Backup & Restore'),
           const _BackupCard(),
@@ -918,6 +905,58 @@ class _SectionHeader extends StatelessWidget {
               fontWeight: FontWeight.w700,
             ),
       ),
+    );
+  }
+}
+
+class _ExpandableSection extends StatefulWidget {
+  final String title;
+  final List<Widget> children;
+  const _ExpandableSection({required this.title, required this.children});
+
+  @override
+  State<_ExpandableSection> createState() => _ExpandableSectionState();
+}
+
+class _ExpandableSectionState extends State<_ExpandableSection> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        GestureDetector(
+          onTap: () => setState(() => _expanded = !_expanded),
+          behavior: HitTestBehavior.opaque,
+          child: Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 8),
+            child: Row(
+              children: [
+                Text(
+                  widget.title.toUpperCase(),
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: cs.primary,
+                    letterSpacing: 1.2,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  _expanded
+                      ? Icons.expand_less_rounded
+                      : Icons.expand_more_rounded,
+                  size: 14,
+                  color: cs.primary,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_expanded) _SettingsCard(children: widget.children),
+      ],
     );
   }
 }
