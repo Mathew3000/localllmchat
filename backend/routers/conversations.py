@@ -270,7 +270,12 @@ async def generate_title(
                     {"role": "user", "content": prompt},
                 ],
                 "stream": False,
-                "max_tokens": 200,
+                # Reasoning models (e.g. Qwen3) can spend several hundred
+                # tokens on their <think>/reasoning_content trace before
+                # emitting the actual TITLE line — too small a budget
+                # truncates mid-thought and the fallback picks up a fragment
+                # of the reasoning instead of the title.
+                "max_tokens": 1024,
                 # Disable thinking mode for models that support this flag
                 # (e.g. Qwen3 on vLLM). Ignored by other backends.
                 "enable_thinking": False,

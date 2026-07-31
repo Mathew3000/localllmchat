@@ -88,7 +88,11 @@ class ApiService {
         }
       ],
       'stream': false,
-      'max_tokens': 200,
+      // Reasoning models (e.g. Qwen3) can spend several hundred tokens on
+      // their <think>/reasoning_content trace before emitting the actual
+      // TITLE line — too small a budget truncates mid-thought and the
+      // regex fallback picks up a fragment of the reasoning instead.
+      'max_tokens': 1024,
       'enable_thinking': false,
       'chat_template_kwargs': {'enable_thinking': false},
     });
