@@ -112,6 +112,14 @@ async def websocket_endpoint(
                 memory_context: str | None = msg.get("memory_context") or None
                 # Client's local datetime string (avoids UTC bias on the server).
                 client_datetime: str | None = msg.get("client_datetime") or None
+                # Active personality's system prompt (overrides stored global one).
+                system_prompt: str | None = msg.get("system_prompt")
+                # IDs of MCP servers enabled for the active personality; None
+                # means no restriction (legacy conversations without a
+                # personality assigned).
+                active_mcp_server_ids: list[str] | None = msg.get(
+                    "active_mcp_server_ids"
+                )
 
                 # Clamp image count to prevent unbounded memory use.
                 if len(images) > _MAX_IMAGES:
@@ -159,12 +167,15 @@ async def websocket_endpoint(
                     t: list[dict] = tools,
                     mc: str | None = memory_context,
                     cdt: str | None = client_datetime,
+                    sp: str | None = system_prompt,
+                    ams: list[str] | None = active_mcp_server_ids,
                 ) -> None:
                     task_db = AsyncSessionLocal()
                     try:
                         await run_generation(
                             task_db, uid, cid, s, tools=t, memory_context=mc,
-                            client_datetime=cdt,
+                            client_datetime=cdt, system_prompt_override=sp,
+                            active_mcp_server_ids=ams,
                         )
                     finally:
                         await task_db.close()

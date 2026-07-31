@@ -492,6 +492,8 @@ class BackendService {
     List<Map<String, dynamic>> tools = const [],
     String? memoryContext,
     String? clientDatetime,
+    String? systemPrompt,
+    List<String>? activeMcpServerIds,
   }) async {
     await ensureConnected();
     _send({
@@ -504,6 +506,9 @@ class BackendService {
       if (memoryContext != null && memoryContext.isNotEmpty)
         'memory_context': memoryContext,
       if (clientDatetime != null) 'client_datetime': clientDatetime,
+      if (systemPrompt != null) 'system_prompt': systemPrompt,
+      if (activeMcpServerIds != null)
+        'active_mcp_server_ids': activeMcpServerIds,
     });
   }
 

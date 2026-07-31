@@ -1810,6 +1810,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     try {
+      final personality = _effectivePersonality();
       await _backend!.sendMessage(
         conv.id,
         actualUserMsg.content,
@@ -1825,6 +1826,13 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         clientDatetime: settings.injectDateTime
             ? DateFormat('EEEE, d MMMM yyyy, HH:mm').format(DateTime.now())
             : null,
+        // Active personality's own system prompt — overrides the backend's
+        // stored global systemPrompt for this message.
+        systemPrompt: _effectiveSystemPrompt(),
+        // Scope backend-side (non-local) MCP servers to the personality's
+        // selection. Null (no personality — legacy conversations) means no
+        // restriction, preserving old behavior.
+        activeMcpServerIds: personality?.activeMcpServerIds.toList(),
       );
     } catch (e) {
       assistantMsg.isStreaming = false;

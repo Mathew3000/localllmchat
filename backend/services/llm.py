@@ -63,12 +63,19 @@ def _build_messages(
     tools_enabled: bool | None = None,
     memory_context: str | None = None,
     client_datetime: str | None = None,
+    system_prompt_override: str | None = None,
 ) -> list[dict]:
     """Convert ORM message list to OpenAI chat/completions payload."""
     messages: list[dict] = []
     preserve_thinking: bool = bool(settings.get("preserveThinking", False))
 
-    system_prompt: str = settings.get("systemPrompt", "")
+    # The client sends the active personality's system prompt per-message;
+    # fall back to the stored global prompt for legacy conversations.
+    system_prompt: str = (
+        system_prompt_override
+        if system_prompt_override is not None
+        else settings.get("systemPrompt", "")
+    )
     if settings.get("injectDateTime"):
         dt_str = client_datetime if client_datetime else _dt_string()
         system_prompt += f"\n\nCurrent date and time: {dt_str}"
@@ -148,6 +155,8 @@ async def run_generation(
     tools: list[dict] | None = None,
     memory_context: str | None = None,
     client_datetime: str | None = None,
+    system_prompt_override: str | None = None,
+    active_mcp_server_ids: list[str] | None = None,
 ) -> None:
     """
     Background task: stream LLM response and persist the result.
@@ -158,6 +167,12 @@ async def run_generation(
     the LLM may request tool calls which are forwarded to the Flutter client
     for execution; results flow back via the WebSocket hub and the loop
     continues until the LLM produces a final text response.
+
+    system_prompt_override and active_mcp_server_ids scope generation to the
+    conversation's active personality: the personality's own system prompt is
+    used instead of the stored global one, and only MCP servers selected for
+    that personality are loaded server-side (client-relayed localOnly tools
+    are already scoped by the client before it calls sendMessage).
     """
     MAX_TOOL_ITERATIONS = 10
 
@@ -209,10 +224,17 @@ async def run_generation(
         # When the client sends no tools, the backend reads mcpServers from the
         # stored user settings, connects to them directly, and handles tool
         # execution itself — no round-trip to the Flutter client needed.
+        allowed_ids = (
+            set(active_mcp_server_ids) if active_mcp_server_ids is not None else None
+        )
         if not tools:
-            tools, mcp_tool_clients = await load_tools_from_settings(settings)
+            tools, mcp_tool_clients = await load_tools_from_settings(
+                settings, allowed_server_ids=allowed_ids
+            )
             if not memory_context:
-                memory_context = await fetch_memory_context(settings)
+                memory_context = await fetch_memory_context(
+                    settings, allowed_server_ids=allowed_ids
+                )
 
         # ── Create placeholder assistant message ──────────────────────────────
         assistant_msg = Message(
@@ -257,6 +279,7 @@ async def run_generation(
                     tools_enabled=bool(tools),
                     memory_context=memory_context,
                     client_datetime=client_datetime,
+                    system_prompt_override=system_prompt_override,
                 ),
                 "stream": True,
                 "stream_options": {"include_usage": True},
