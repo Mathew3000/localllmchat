@@ -12,10 +12,20 @@ import 'debug_logger.dart';
 class ApiService {
   final AppSettings settings;
   final String _url;
-  // Lazily-created HTTP client; respects allowSelfSigned for LAN self-signed certs.
-  late final http.Client _client = settings.allowSelfSigned
-      ? IOClient(HttpClient()..badCertificateCallback = (_, __, ___) => true)
-      : http.Client();
+  // Lazily-created HTTP client. Always uses our own HttpClient (rather than
+  // the package's default) so we can raise idleTimeout well above its 15s
+  // default — reasoning models can pause for well over 15s between chunks
+  // (heavier with tool-call grammar constraints), and Dart's HttpClient
+  // force-closes the socket once a connection looks idle for that long,
+  // which surfaces to callers as "peer closed connection ... incomplete
+  // chunked read" even though the server is still generating fine.
+  late final http.Client _client = IOClient(
+    HttpClient()
+      ..idleTimeout = const Duration(minutes: 10)
+      ..badCertificateCallback = settings.allowSelfSigned
+          ? (_, __, ___) => true
+          : null,
+  );
 
   ApiService(this.settings, String activeBaseUrl) : _url = activeBaseUrl;
 
