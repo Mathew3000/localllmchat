@@ -16,6 +16,7 @@ result so the device receives the completed message on next load.
 
 import asyncio
 import json
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -27,6 +28,8 @@ from sqlalchemy import select
 from models import Conversation, Message, UserSettings
 from services.ws_hub import hub
 from services.mcp import AnyMcpClient, fetch_memory_context, load_tools_from_settings
+
+logger = logging.getLogger(__name__)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -235,6 +238,14 @@ async def run_generation(
                 memory_context = await fetch_memory_context(
                     settings, allowed_server_ids=allowed_ids
                 )
+
+        if tools:
+            logger.info(
+                "conversation %s: sending %d MCP tool(s) to LLM: %s",
+                conversation_id,
+                len(tools),
+                ", ".join(t.get("function", {}).get("name", "?") for t in tools),
+            )
 
         # ── Create placeholder assistant message ──────────────────────────────
         assistant_msg = Message(
@@ -617,6 +628,11 @@ async def run_generation(
     except Exception as e:
         if not mcp_tool_clients:
             hub.cancel_tool_futures(conversation_id)
+        logger.exception(
+            "conversation %s: generation failed (tools=%d)",
+            conversation_id,
+            len(tools) if tools else 0,
+        )
         await _send({
             "type": "error",
             "conversation_id": conversation_id,
