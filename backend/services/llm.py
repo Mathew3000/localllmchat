@@ -186,6 +186,11 @@ async def run_generation(
     thinking_closed = False
     conv: Conversation | None = None
     mcp_tool_clients: dict = {}
+    # Set once we've retried a request without tools after the LLM server
+    # dropped the connection outright — some local servers (llama.cpp-style
+    # grammar-constrained decoding) crash on a large/complex combined tool
+    # schema. Prevents retrying more than once per generation.
+    tools_retry_used = False
 
     async def _send(data: dict) -> None:
         """Fire-and-forget send; silently swallows send errors."""
@@ -302,105 +307,128 @@ async def run_generation(
                 payload["tool_choice"] = "auto"
 
             # ── Stream from LLM ───────────────────────────────────────────────
-            async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
-                async with client.stream(
-                    "POST",
-                    f"{base_url}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                ) as resp:
-                    if resp.status_code != 200:
-                        body = await resp.aread()
-                        # Truncate the upstream error body to avoid leaking
-                        # sensitive content (e.g. API keys reflected by the
-                        # provider in authenticated error responses).
-                        excerpt = body.decode(errors="replace")[:300].strip()
-                        await _send({
-                            "type": "error",
-                            "conversation_id": conversation_id,
-                            "detail": f"LLM error {resp.status_code}: {excerpt}",
-                        })
-                        await db.delete(assistant_msg)
-                        await db.commit()
-                        assistant_msg = None
-                        return
+            # The whole streaming read is wrapped so a connection dropped
+            # outright by the LLM server (some local llama.cpp-style servers
+            # crash on a large/complex combined tool schema during grammar
+            # compilation) can trigger a one-time retry without tools instead
+            # of failing the whole turn.
+            aborted_for_retry = False
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    ) as resp:
+                        if resp.status_code != 200:
+                            body = await resp.aread()
+                            # Truncate the upstream error body to avoid leaking
+                            # sensitive content (e.g. API keys reflected by the
+                            # provider in authenticated error responses).
+                            excerpt = body.decode(errors="replace")[:300].strip()
+                            await _send({
+                                "type": "error",
+                                "conversation_id": conversation_id,
+                                "detail": f"LLM error {resp.status_code}: {excerpt}",
+                            })
+                            await db.delete(assistant_msg)
+                            await db.commit()
+                            assistant_msg = None
+                            return
 
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        data = line[6:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                            # Capture usage when present (may be in a chunk with empty choices).
-                            if chunk.get("usage"):
-                                usage_data = chunk["usage"]
-                            choices = chunk.get("choices", [])
-                            if not choices:
+                        async for line in resp.aiter_lines():
+                            if not line.startswith("data: "):
                                 continue
-                            delta = choices[0].get("delta", {})
+                            data = line[6:].strip()
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                # Capture usage when present (may be in a chunk with empty choices).
+                                if chunk.get("usage"):
+                                    usage_data = chunk["usage"]
+                                choices = chunk.get("choices", [])
+                                if not choices:
+                                    continue
+                                delta = choices[0].get("delta", {})
 
-                            # Accumulate tool call deltas (OpenAI streaming format)
-                            for tc in delta.get("tool_calls", []):
-                                idx = tc.get("index", 0)
-                                if idx not in tool_call_accum:
-                                    tool_call_accum[idx] = {
-                                        "id": "",
-                                        "name": "",
-                                        "arguments": "",
-                                    }
-                                if tc.get("id"):
-                                    tool_call_accum[idx]["id"] = tc["id"]
-                                fn = tc.get("function", {})
-                                if fn.get("name"):
-                                    tool_call_accum[idx]["name"] += fn["name"]
-                                if fn.get("arguments"):
-                                    tool_call_accum[idx]["arguments"] += fn["arguments"]
+                                # Accumulate tool call deltas (OpenAI streaming format)
+                                for tc in delta.get("tool_calls", []):
+                                    idx = tc.get("index", 0)
+                                    if idx not in tool_call_accum:
+                                        tool_call_accum[idx] = {
+                                            "id": "",
+                                            "name": "",
+                                            "arguments": "",
+                                        }
+                                    if tc.get("id"):
+                                        tool_call_accum[idx]["id"] = tc["id"]
+                                    fn = tc.get("function", {})
+                                    if fn.get("name"):
+                                        tool_call_accum[idx]["name"] += fn["name"]
+                                    if fn.get("arguments"):
+                                        tool_call_accum[idx]["arguments"] += fn["arguments"]
 
-                            # Thinking tokens (Qwen3 / reasoning models)
-                            reasoning = delta.get("reasoning_content")
-                            if reasoning:
-                                if not in_thinking:
-                                    tok = "<think>"
-                                    content_buf.append(tok)
+                                # Thinking tokens (Qwen3 / reasoning models)
+                                reasoning = delta.get("reasoning_content")
+                                if reasoning:
+                                    if not in_thinking:
+                                        tok = "<think>"
+                                        content_buf.append(tok)
+                                        await _send({
+                                            "type": "token",
+                                            "conversation_id": conversation_id,
+                                            "message_id": assistant_msg.id,
+                                            "content": tok,
+                                        })
+                                        in_thinking = True
+                                    content_buf.append(reasoning)
                                     await _send({
                                         "type": "token",
                                         "conversation_id": conversation_id,
                                         "message_id": assistant_msg.id,
-                                        "content": tok,
+                                        "content": reasoning,
                                     })
-                                    in_thinking = True
-                                content_buf.append(reasoning)
-                                await _send({
-                                    "type": "token",
-                                    "conversation_id": conversation_id,
-                                    "message_id": assistant_msg.id,
-                                    "content": reasoning,
-                                })
 
-                            # Regular content
-                            content = delta.get("content")
-                            if content:
-                                if in_thinking and not thinking_closed:
-                                    tok = "</think>"
-                                    content_buf.append(tok)
+                                # Regular content
+                                content = delta.get("content")
+                                if content:
+                                    if in_thinking and not thinking_closed:
+                                        tok = "</think>"
+                                        content_buf.append(tok)
+                                        await _send({
+                                            "type": "token",
+                                            "conversation_id": conversation_id,
+                                            "message_id": assistant_msg.id,
+                                            "content": tok,
+                                        })
+                                        thinking_closed = True
+                                    content_buf.append(content)
                                     await _send({
                                         "type": "token",
                                         "conversation_id": conversation_id,
                                         "message_id": assistant_msg.id,
-                                        "content": tok,
+                                        "content": content,
                                     })
-                                    thinking_closed = True
-                                content_buf.append(content)
-                                await _send({
-                                    "type": "token",
-                                    "conversation_id": conversation_id,
-                                    "message_id": assistant_msg.id,
-                                    "content": content,
-                                })
-                        except Exception:
-                            pass  # malformed SSE chunk — skip
+                            except Exception:
+                                pass  # malformed SSE chunk — skip
+            except httpx.HTTPError as exc:
+                if tools and not content_buf and not tools_retry_used:
+                    logger.warning(
+                        "conversation %s: LLM call failed with %d tools "
+                        "active (%s) — retrying without tools",
+                        conversation_id, len(tools), exc,
+                    )
+                    tools_retry_used = True
+                    tools = []
+                    mcp_tool_clients = {}
+                    aborted_for_retry = True
+                else:
+                    raise
+
+            if aborted_for_retry:
+                continue
 
             # Close any still-open think block
             if in_thinking and not thinking_closed:
