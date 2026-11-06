@@ -13,7 +13,9 @@ import '../models/tool_call.dart';
 ///   "get_weather"         → "Get weather"
 ///   "code_interpreter"    → "Code interpreter"
 String _toolLabel(String name) {
-  if (name.isEmpty) return 'tool';
+  if (name.isEmpty) return 'a tool';
+  final friendly = _friendlyToolNames[name];
+  if (friendly != null) return friendly;
   final words = name.split('_');
   final first = words.first;
   final capitalised =
@@ -21,6 +23,27 @@ String _toolLabel(String name) {
   if (words.length == 1) return capitalised;
   return '$capitalised ${words.skip(1).join(' ').toLowerCase()}';
 }
+
+/// Plain names for common tools, used as "Using <name>".
+const _friendlyToolNames = <String, String>{
+  'web_search': 'web search',
+  'web_search_and_read': 'web search',
+  'http_get_text': 'a web page',
+  'http_get_image': 'an image download',
+  'image_search': 'image search',
+  'date_time': 'the clock',
+  'search_nodes': 'memory',
+  'open_nodes': 'memory',
+  'read_graph': 'memory',
+  'create_entities': 'memory (saving)',
+  'create_relations': 'memory (saving)',
+  'add_observations': 'memory (saving)',
+  'delete_entities': 'memory (forgetting)',
+  'delete_observations': 'memory (forgetting)',
+  'delete_relations': 'memory (forgetting)',
+  'product_price_compare': 'price comparison',
+  'ecommerce_product_search': 'shop search',
+};
 
 // ── Public bubble widget ──────────────────────────────────────────────────────
 
@@ -99,7 +122,7 @@ class _ToolCallCardState extends State<_ToolCallCard> {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        'Performing ${_toolLabel(widget.call.name)}',
+                        'Using ${_toolLabel(widget.call.name)}',
                         style: theme.textTheme.labelMedium?.copyWith(
                           color: cs.onSecondaryContainer,
                           fontWeight: FontWeight.w600,
@@ -220,7 +243,7 @@ class _ToolResultCardState extends State<_ToolResultCard> {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        running ? 'Running $label\u2026' : '$label result',
+                        running ? 'Using $label\u2026' : 'Result from $label',
                         style: theme.textTheme.labelMedium?.copyWith(
                           color: cs.onSurface,
                           fontWeight: FontWeight.w600,

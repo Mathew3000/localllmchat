@@ -302,7 +302,7 @@ class _ChatInputState extends State<ChatInput> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 2),
                 child: Tooltip(
-                  message: _hasCameraSupport ? 'Attach image / camera' : 'Attach image',
+                  message: _hasCameraSupport ? 'Add a picture or take a photo' : 'Add a picture',
                   child: IconButton(
                     onPressed: _onImageButtonPressed,
                     icon: Icon(
@@ -320,7 +320,7 @@ class _ChatInputState extends State<ChatInput> {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 2),
                   child: Tooltip(
-                    message: hasFolder ? 'Change folder' : 'Select folder for AI',
+                    message: hasFolder ? 'Choose a different folder' : 'Let the AI look at a folder',
                     child: IconButton(
                       onPressed: _pickFolder,
                       icon: Icon(
@@ -370,7 +370,7 @@ class _ChatInputState extends State<ChatInput> {
                           ? (hasQueue
                               ? 'Add another to queue…'
                               : 'Queue a message…')
-                          : 'Message',
+                          : 'Ask anything…',
                       hintStyle: TextStyle(
                           color: cs.onSurfaceVariant.withValues(alpha: 0.7)),
                       border: InputBorder.none,
@@ -382,14 +382,13 @@ class _ChatInputState extends State<ChatInput> {
                 ),
               ),
               const SizedBox(width: 8),
-              if (widget.contextWindowTokens != null) ...[
+              // Only show once the chat has started using memory.
+              if (widget.contextWindowTokens != null &&
+                  (widget.promptTokens ?? 0) > 0)
                 _ContextRing(
-                  // Show an empty ring from the start; fills as tokens accumulate.
-                  promptTokens: widget.promptTokens ?? 0,
+                  promptTokens: widget.promptTokens!,
                   contextWindowTokens: widget.contextWindowTokens!,
                 ),
-                const SizedBox(width: 6),
-              ],
               _ActionButton(
                 isStreaming: widget.isStreaming,
                 canSend: canSend,
@@ -469,7 +468,7 @@ class _FolderChip extends StatelessWidget {
           ),
           const SizedBox(width: 4),
           Text(
-            'folder accessible to AI',
+            'the AI can read this folder',
             style: theme.textTheme.labelSmall
                 ?.copyWith(color: cs.onSurfaceVariant),
           ),
@@ -686,6 +685,9 @@ class _QueueChip extends StatelessWidget {
 }
 
 // ── Context usage ring ────────────────────────────────────────────────────────
+//
+// A small ring that fills up as the chat gets longer. Numbers are only shown
+// on tap, in plain words.
 
 class _ContextRing extends StatelessWidget {
   final int promptTokens;
@@ -703,45 +705,44 @@ class _ContextRing extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final ratio = (promptTokens / contextWindowTokens).clamp(0.0, 1.0);
+    final pct = (ratio * 100).round();
     final color = ratio < 0.7
         ? cs.primary
         : ratio < 0.9
             ? cs.tertiary
             : cs.error;
 
-    final label = '${_fmt(promptTokens)}\n/ ${_fmt(contextWindowTokens)}';
+    final message = ratio < 0.7
+        ? 'The AI can remember this whole chat ($pct% of its memory used).'
+        : ratio < 0.9
+            ? 'This chat is getting long ($pct% of the AI\'s memory used). '
+                'Consider starting a new chat soon.'
+            : 'This chat is almost too long for the AI to remember ($pct%). '
+                'Start a new chat for best results.';
 
     return Tooltip(
-      message: '${_fmt(promptTokens)} / ${_fmt(contextWindowTokens)} tokens used',
-      child: Padding(
-        padding: const EdgeInsets.only(bottom: 2),
-        child: SizedBox(
-          width: 44,
-          height: 44,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              SizedBox(
-                width: 44,
-                height: 44,
-                child: CircularProgressIndicator(
-                  value: ratio,
-                  strokeWidth: 3,
-                  backgroundColor: cs.surfaceContainerHighest,
-                  color: color,
-                ),
-              ),
-              Text(
-                label,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 8.5,
-                  height: 1.2,
-                  color: color,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
+      message: 'Chat memory: $pct% used',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: () => ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                '$message\n(${_fmt(promptTokens)} of ${_fmt(contextWindowTokens)} tokens)'),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 5),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              value: ratio == 0 ? 0.001 : ratio,
+              strokeWidth: 3,
+              backgroundColor: cs.surfaceContainerHighest,
+              color: color,
+            ),
           ),
         ),
       ),

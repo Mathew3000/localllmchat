@@ -7,6 +7,8 @@ import '../widgets/message_bubble.dart';
 import '../widgets/tool_bubble.dart';
 import '../widgets/chat_input.dart';
 import '../widgets/color_picker.dart';
+import '../widgets/friendly.dart';
+import 'mcp_servers_screen.dart';
 import 'personality_settings_screen.dart';
 import 'settings_screen.dart';
 
@@ -87,24 +89,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
         // ── Shared action buttons ──────────────────────────────────────────
         final actions = <Widget>[
+          const _ConnectionButton(),
           if (p.mcpConfigured) const _McpToggleButton(),
-          if (p.settings.baseUrlAway.isNotEmpty)
-            Tooltip(
-              message: p.usingAwayUrl
-                  ? 'Away (VPN) — tap to recheck'
-                  : 'Home — tap to recheck',
-              child: IconButton(
-                icon: Icon(
-                  p.usingAwayUrl
-                      ? Icons.router_outlined
-                      : Icons.home_rounded,
-                  color: p.usingAwayUrl
-                      ? Theme.of(context).colorScheme.primary
-                      : null,
-                ),
-                onPressed: p.recheckNetwork,
-              ),
-            ),
           IconButton(
             icon: const Icon(Icons.add_comment_outlined),
             tooltip: 'New chat',
@@ -160,7 +146,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: Column(
                     children: [
                       _DesktopChatHeader(
-                        title: p.activeConversation?.title ?? 'LoomChat',
+                        title: p.activeConversation?.title ?? 'New chat',
                         actions: actions,
                         bgColor: bgColor,
                         sidebarVisible: _sidebarVisible,
@@ -187,8 +173,9 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: const Icon(Icons.menu_rounded),
               onPressed: () => _scaffoldKey.currentState?.openDrawer(),
             ),
+            titleSpacing: 0,
             title: _AppBarTitle(
-              title: p.activeConversation?.title ?? 'LoomChat',
+              title: p.activeConversation?.title ?? 'New chat',
             ),
             actions: actions,
             elevation: 0,
@@ -304,12 +291,77 @@ class _AppBarTitle extends StatelessWidget {
   const _AppBarTitle({required this.title});
 
   @override
+  Widget build(BuildContext context) => _ChatTitle(title: title);
+}
+
+/// Chat title with the active personality underneath. Tapping it lets the
+/// user switch personality (only possible before the first message).
+class _ChatTitle extends StatelessWidget {
+  final String title;
+  const _ChatTitle({required this.title});
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Text(
+    final cs = theme.colorScheme;
+    final p = context.watch<AppProvider>();
+    final personality = p.activePersonality;
+    final conv = p.activeConversation;
+    final canChange = conv == null || conv.messages.isEmpty;
+
+    final titleText = Text(
       title,
+      maxLines: 1,
       overflow: TextOverflow.ellipsis,
       style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+    );
+    if (personality == null) return titleText;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () {
+        if (canChange) {
+          showPersonalityPicker(context, p);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                  'This chat uses "${personality.name}". Start a new chat to pick a different personality.'),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            titleText,
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.person_outline_rounded,
+                    size: 13, color: cs.onSurfaceVariant),
+                const SizedBox(width: 3),
+                Flexible(
+                  child: Text(
+                    personality.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall
+                        ?.copyWith(color: cs.onSurfaceVariant),
+                  ),
+                ),
+                if (canChange)
+                  Icon(Icons.arrow_drop_down_rounded,
+                      size: 16, color: cs.onSurfaceVariant),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -357,11 +409,9 @@ class _DesktopChatHeader extends StatelessWidget {
               onPressed: onToggleSidebar,
             ),
             Expanded(
-              child: Text(
-                title,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w600),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: _ChatTitle(title: title),
               ),
             ),
             ...actions,
@@ -444,7 +494,7 @@ class _MessageList extends StatelessWidget {
       builder: (_, p, __) {
         final conv = p.activeConversation;
         if (conv == null || conv.messages.isEmpty) {
-          return _EmptyState(activeUrl: p.activeBaseUrl);
+          return const _EmptyState();
         }
 
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -504,195 +554,403 @@ class _MessageList extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  final String activeUrl;
-  const _EmptyState({required this.activeUrl});
+  const _EmptyState();
+
+  static const _suggestions = <(IconData, String, String)>[
+    (
+      Icons.mail_outline_rounded,
+      'Write an email',
+      'Help me write an email. First ask me who it is for and what it should say.'
+    ),
+    (
+      Icons.lightbulb_outline_rounded,
+      'Explain something',
+      'Explain something to me in simple words. First ask me what I would like to understand.'
+    ),
+    (
+      Icons.notes_rounded,
+      'Summarize a text',
+      'I would like you to summarize a text for me. I will paste it in my next message.'
+    ),
+    (
+      Icons.checklist_rounded,
+      'Plan something',
+      'Help me plan something step by step. First ask me what I want to plan.'
+    ),
+  ];
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Consumer<AppProvider>(
       builder: (context, p, _) {
         final personality = p.activePersonality;
         final personalities = p.settings.personalities;
+        final conn = connectionState(p);
 
         return Center(
-          child: Padding(
-            padding: const EdgeInsets.all(32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.auto_awesome_rounded,
-                    size: 64, color: cs.primary.withValues(alpha: 0.6)),
-                const SizedBox(height: 16),
-                Text(
-                  'Start a conversation',
-                  style: Theme.of(context)
-                      .textTheme
-                      .headlineSmall
-                      ?.copyWith(color: cs.onSurface),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Connected to:\n$activeUrl',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
-                      ?.copyWith(color: cs.onSurfaceVariant),
-                ),
-                // ── Personality picker ───────────────────────────────────
-                if (personalities.isNotEmpty) ...[
-                  const SizedBox(height: 20),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(20),
-                    onTap: personalities.length == 1
-                        ? null
-                        : () => _showPersonalityPicker(context, p),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 8),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: cs.outline),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.person_outline_rounded,
-                              size: 16, color: cs.primary),
-                          const SizedBox(width: 6),
-                          Text(
-                            personality?.name ?? 'No personality',
-                            style: TextStyle(
-                                color: cs.onSurface, fontSize: 13),
-                          ),
-                          if (personalities.length > 1) ...[
-                            const SizedBox(width: 4),
-                            Icon(Icons.arrow_drop_down,
-                                size: 18, color: cs.onSurfaceVariant),
-                          ],
-                        ],
-                      ),
-                    ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.auto_awesome_rounded,
+                      size: 56, color: cs.primary.withValues(alpha: 0.7)),
+                  const SizedBox(height: 16),
+                  Text(
+                    conn == ConnState.notSetUp
+                        ? 'Welcome to LoomChat'
+                        : 'How can I help you today?',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.headlineSmall
+                        ?.copyWith(color: cs.onSurface),
                   ),
+                  const SizedBox(height: 16),
+
+                  if (conn == ConnState.notSetUp) ...[
+                    Text(
+                      'LoomChat needs to be connected to an AI before you can chat.',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(color: cs.onSurfaceVariant),
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const SettingsScreen()),
+                      ),
+                      icon: const Icon(Icons.settings_outlined),
+                      label: const Text('Set up connection'),
+                    ),
+                  ] else ...[
+                    // ── Personality picker ─────────────────────────────
+                    if (personalities.isNotEmpty)
+                      ActionChip(
+                        avatar: Icon(Icons.person_outline_rounded,
+                            size: 18, color: cs.primary),
+                        label: Text(
+                          personalities.length > 1
+                              ? 'Personality: ${personality?.name ?? 'none'}  ▾'
+                              : 'Personality: ${personality?.name ?? 'none'}',
+                        ),
+                        onPressed: () => showPersonalityPicker(context, p),
+                      ),
+                    const SizedBox(height: 24),
+                    // ── Suggestions ────────────────────────────────────
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        for (final s in _suggestions)
+                          _SuggestionCard(
+                            icon: s.$1,
+                            label: s.$2,
+                            onTap: () => p.sendMessage(s.$3),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Or just type your question below.',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: cs.onSurfaceVariant),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         );
       },
     );
   }
+}
 
-  void _showPersonalityPicker(BuildContext context, AppProvider p) {
-    final personalities = p.settings.personalities;
-    final current = p.activePersonality?.id;
+class _SuggestionCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  const _SuggestionCard(
+      {required this.icon, required this.label, required this.onTap});
 
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  Text('Select personality',
-                      style: Theme.of(ctx).textTheme.titleMedium),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              const PersonalitySettingsScreen(),
-                        ),
-                      );
-                    },
-                    child: const Text('Manage'),
-                  ),
-                ],
-              ),
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return SizedBox(
+      width: 150,
+      child: Material(
+        color: cs.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, color: cs.primary),
+                const SizedBox(height: 8),
+                Text(label,
+                    style: theme.textTheme.bodyMedium
+                        ?.copyWith(fontWeight: FontWeight.w500)),
+              ],
             ),
-            const Divider(height: 1),
-            ...personalities.map((personality) => ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor:
-                        Theme.of(ctx).colorScheme.primaryContainer,
-                    radius: 16,
-                    child: Text(
-                      personality.name.isNotEmpty
-                          ? personality.name[0].toUpperCase()
-                          : '?',
-                      style: TextStyle(
-                        color: Theme.of(ctx)
-                            .colorScheme
-                            .onPrimaryContainer,
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  title: Text(personality.name),
-                  subtitle: Text(
-                    personality.systemPrompt,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: personality.id == current
-                      ? Icon(Icons.check_rounded,
-                          color: Theme.of(ctx).colorScheme.primary)
-                      : null,
-                  onTap: () {
-                    p.setConversationPersonality(personality.id);
-                    Navigator.pop(ctx);
-                  },
-                )),
-            const SizedBox(height: 8),
-          ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _ErrorBanner extends StatelessWidget {
+/// Bottom sheet for choosing the personality of the current (empty) chat.
+void showPersonalityPicker(BuildContext context, AppProvider p) {
+  final personalities = p.settings.personalities;
+  final current = p.activePersonality?.id;
+
+  showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (ctx) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text('Who should you talk to?',
+                      style: Theme.of(ctx).textTheme.titleMedium),
+                ),
+                TextButton.icon(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const PersonalitySettingsScreen(),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.edit_outlined, size: 18),
+                  label: const Text('Edit personalities'),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Flexible(
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final personality in personalities)
+                  ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor:
+                          Theme.of(ctx).colorScheme.primaryContainer,
+                      radius: 18,
+                      child: Text(
+                        personality.name.isNotEmpty
+                            ? personality.name[0].toUpperCase()
+                            : '?',
+                        style: TextStyle(
+                          color: Theme.of(ctx).colorScheme.onPrimaryContainer,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    title: Text(personality.name),
+                    subtitle: personality.systemPrompt.trim().isEmpty
+                        ? null
+                        : Text(
+                            personality.systemPrompt,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                    trailing: personality.id == current
+                        ? Icon(Icons.check_circle_rounded,
+                            color: Theme.of(ctx).colorScheme.primary)
+                        : null,
+                    onTap: () {
+                      p.setConversationPersonality(personality.id);
+                      Navigator.pop(ctx);
+                    },
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    ),
+  );
+}
+
+class _ErrorBanner extends StatefulWidget {
   final String error;
   final VoidCallback onDismiss;
 
   const _ErrorBanner({required this.error, required this.onDismiss});
 
   @override
+  State<_ErrorBanner> createState() => _ErrorBannerState();
+}
+
+class _ErrorBannerState extends State<_ErrorBanner> {
+  bool _showDetails = false;
+
+  @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final fe = friendlyError(widget.error);
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
       color: cs.errorContainer,
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.error_outline, color: cs.onErrorContainer, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              error,
-              style: TextStyle(color: cs.onErrorContainer, fontSize: 13),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Icon(Icons.error_outline,
+                    color: cs.onErrorContainer, size: 18),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  fe.message,
+                  style: TextStyle(color: cs.onErrorContainer, fontSize: 13),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Dismiss',
+                icon: Icon(Icons.close, color: cs.onErrorContainer, size: 18),
+                onPressed: widget.onDismiss,
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 18),
+            child: TextButton(
+              style: TextButton.styleFrom(
+                foregroundColor: cs.onErrorContainer,
+                visualDensity: VisualDensity.compact,
+              ),
+              onPressed: () => setState(() => _showDetails = !_showDetails),
+              child: Text(_showDetails ? 'Hide details' : 'Show details'),
             ),
           ),
-          IconButton(
-            icon: Icon(Icons.close, color: cs.onErrorContainer, size: 18),
-            onPressed: onDismiss,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-          ),
+          if (_showDetails)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(26, 0, 8, 4),
+              child: SelectableText(
+                fe.details,
+                style: TextStyle(
+                  color: cs.onErrorContainer.withValues(alpha: 0.8),
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Connection status button (only shown when something needs attention) ────
+
+class _ConnectionButton extends StatelessWidget {
+  const _ConnectionButton();
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.watch<AppProvider>();
+    final cs = Theme.of(context).colorScheme;
+    final conn = connectionState(p);
+    if (conn == ConnState.ok) return const SizedBox.shrink();
+
+    final (IconData icon, Color color) = switch (conn) {
+      ConnState.away => (Icons.travel_explore_rounded, cs.primary),
+      ConnState.offline => (Icons.cloud_off_rounded, cs.error),
+      _ => (Icons.link_off_rounded, cs.error),
+    };
+
+    return IconButton(
+      tooltip: connectionTitle(conn, backend: p.settings.useBackend),
+      icon: Icon(icon, color: color),
+      onPressed: () => _showSheet(context, p, conn),
+    );
+  }
+
+  void _showSheet(BuildContext context, AppProvider p, ConnState conn) {
+    final backend = p.settings.useBackend;
+    final String explanation = switch (conn) {
+      ConnState.away =>
+        "You're away from your home network, so LoomChat is using your "
+            'away-from-home address. Everything works as usual.',
+      ConnState.offline =>
+        "LoomChat can't reach your server right now. Check that you're "
+            'online and that the server is running.',
+      _ => 'LoomChat is not connected to an AI yet. Open the settings to set it up.',
+    };
+
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(connectionTitle(conn, backend: backend),
+                  style: Theme.of(ctx).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text(explanation),
+              const SizedBox(height: 20),
+              if (conn != ConnState.notSetUp)
+                FilledButton.icon(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    if (backend) {
+                      p.backendReconnect();
+                    } else {
+                      p.recheckNetwork();
+                    }
+                  },
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Check again'),
+                ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                  );
+                },
+                icon: const Icon(Icons.settings_outlined),
+                label: const Text('Open settings'),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -770,6 +1028,18 @@ class _ConversationListViewState extends State<_ConversationListView> {
                 .where((c) => c.title.toLowerCase().contains(q))
                 .toList();
 
+        // Interleave date headings ("Today", "Yesterday", …) with chats.
+        final entries = <Object>[];
+        String? lastGroup;
+        for (final c in visible) {
+          final g = _dateGroup(c.updatedAt);
+          if (g != lastGroup) {
+            entries.add(g);
+            lastGroup = g;
+          }
+          entries.add(c);
+        }
+
         return Column(
           children: [
             // ── Search field ───────────────────────────────────────────────
@@ -814,9 +1084,25 @@ class _ConversationListViewState extends State<_ConversationListView> {
                     )
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
-                      itemCount: visible.length,
+                      itemCount: entries.length,
                       itemBuilder: (_, i) {
-                        final conv = visible[i];
+                        final entry = entries[i];
+                        if (entry is String) {
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 14, 12, 4),
+                            child: Text(
+                              entry,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelMedium
+                                  ?.copyWith(
+                                    color: cs.onSurfaceVariant,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                            ),
+                          );
+                        }
+                        final conv = entry as Conversation;
                         final isActive = conv.id == p.activeConversation?.id;
                         return _ConversationTile(
                           conv: conv,
@@ -842,6 +1128,19 @@ class _ConversationListViewState extends State<_ConversationListView> {
       },
     );
   }
+}
+
+String _dateGroup(DateTime utcOrLocal) {
+  final t = utcOrLocal.toLocal();
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final day = DateTime(t.year, t.month, t.day);
+  final diff = today.difference(day).inDays;
+  if (diff <= 0) return 'Today';
+  if (diff == 1) return 'Yesterday';
+  if (diff < 7) return 'Previous 7 days';
+  if (diff < 30) return 'Previous 30 days';
+  return 'Older';
 }
 
 // ── Mobile drawer header with hidden unlock trigger ───────────────────────────
@@ -1019,8 +1318,11 @@ class _ConversationTile extends StatelessWidget {
         color: cs.errorContainer,
         child: Icon(Icons.delete_outline, color: cs.onErrorContainer),
       ),
+      confirmDismiss: (_) => _confirmDelete(context),
       onDismissed: (_) => onDelete(),
-      child: ListTile(
+      child: GestureDetector(
+        onSecondaryTap: () => _showContextSheet(context),
+        child: ListTile(
         selected: isActive,
         selectedTileColor: cs.primaryContainer.withValues(alpha: 0.5),
         onTap: onTap,
@@ -1054,13 +1356,37 @@ class _ConversationTile extends StatelessWidget {
           style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
         ),
         trailing: IconButton(
-          icon: Icon(Icons.delete_outline,
-              size: 18, color: cs.onSurfaceVariant),
-          onPressed: onDelete,
+          tooltip: 'More options',
+          icon: Icon(Icons.more_horiz_rounded,
+              size: 20, color: cs.onSurfaceVariant),
+          onPressed: () => _showContextSheet(context),
           visualDensity: VisualDensity.compact,
         ),
       ),
+      ),
     );
+  }
+
+  Future<bool> _confirmDelete(BuildContext context) async {
+    final cs = Theme.of(context).colorScheme;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete this chat?'),
+        content: Text('"${conv.title}" will be removed permanently.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: cs.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
   }
 
   Future<void> _showRenameDialog(BuildContext context) async {
@@ -1068,7 +1394,7 @@ class _ConversationTile extends StatelessWidget {
     final result = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Rename conversation'),
+        title: const Text('Rename chat'),
         content: TextField(
           controller: ctrl,
           autofocus: true,
@@ -1132,7 +1458,7 @@ class _ConversationTile extends StatelessWidget {
             const Divider(),
             ListTile(
               leading: Icon(Icons.person_rounded, color: cs.primary),
-              title: const Text('User bubble color'),
+              title: const Text('Colour of my messages'),
               trailing: conv.userBubbleColor != null
                   ? _ColorDot(color: Color(conv.userBubbleColor!))
                   : null,
@@ -1150,7 +1476,7 @@ class _ConversationTile extends StatelessWidget {
             ListTile(
               leading:
                   Icon(Icons.auto_awesome_rounded, color: cs.primary),
-              title: const Text('AI bubble color'),
+              title: const Text('Colour of AI messages'),
               trailing: conv.assistantBubbleColor != null
                   ? _ColorDot(color: Color(conv.assistantBubbleColor!))
                   : null,
@@ -1193,10 +1519,10 @@ class _ConversationTile extends StatelessWidget {
             ListTile(
               leading:
                   Icon(Icons.delete_outline_rounded, color: cs.error),
-              title: Text('Delete', style: TextStyle(color: cs.error)),
-              onTap: () {
+              title: Text('Delete chat', style: TextStyle(color: cs.error)),
+              onTap: () async {
                 Navigator.pop(outerContext);
-                onDelete();
+                if (await _confirmDelete(outerContext)) onDelete();
               },
             ),
             const SizedBox(height: 8),
@@ -1230,10 +1556,10 @@ class _ColorDot extends StatelessWidget {
   }
 }
 
-// ── MCP toggle button ─────────────────────────────────────────────────────────
+// ── Tools button ──────────────────────────────────────────────────────────────
 //
-// Short tap  → toggle all MCP tools on/off.
-// Long press → show a popup anchored to the button with per-server switches.
+// Tap → a small menu with one main switch ("Use tools") and a switch per
+// tool server, plus a link to the tools settings.
 
 class _McpToggleButton extends StatelessWidget {
   const _McpToggleButton();
@@ -1243,7 +1569,6 @@ class _McpToggleButton extends StatelessWidget {
     final servers = p.settings.mcpServers
         .where((s) => s.baseUrlHome.isNotEmpty)
         .toList();
-    if (servers.isEmpty) return;
 
     final btn = context.findRenderObject() as RenderBox;
     final overlay =
@@ -1259,7 +1584,7 @@ class _McpToggleButton extends StatelessWidget {
     showMenu<void>(
       context: context,
       position: pos,
-      constraints: const BoxConstraints(minWidth: 240, maxWidth: 320),
+      constraints: const BoxConstraints(minWidth: 260, maxWidth: 340),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       items: [
         _McpServersMenuEntry(servers: servers, provider: p),
@@ -1272,32 +1597,21 @@ class _McpToggleButton extends StatelessWidget {
     return Consumer<AppProvider>(
       builder: (context, p, _) {
         final cs = Theme.of(context).colorScheme;
-        return Tooltip(
-          message: p.mcpActive
-              ? 'Tools on — hold for per-server'
-              : 'Tools off — hold for per-server',
-          child: GestureDetector(
-            onLongPress: () => _showServerMenu(context),
-            child: IconButton(
-              icon: Icon(
-                p.mcpActive
-                    ? Icons.extension_rounded
-                    : Icons.extension_off_rounded,
-                color: p.mcpActive
-                    ? cs.primary
-                    : cs.onSurfaceVariant.withValues(alpha: 0.5),
-              ),
-              onPressed: p.toggleMcp,
-            ),
+        return IconButton(
+          tooltip: p.mcpActive ? 'Tools are on' : 'Tools are off',
+          icon: Icon(
+            p.mcpActive ? Icons.handyman_rounded : Icons.handyman_outlined,
+            color: p.mcpActive
+                ? cs.primary
+                : cs.onSurfaceVariant.withValues(alpha: 0.5),
           ),
+          onPressed: () => _showServerMenu(context),
         );
       },
     );
   }
 }
 
-// ── Per-server menu entry ─────────────────────────────────────────────────────
-//
 // A PopupMenuEntry subclass (not PopupMenuItem) so the Switch widgets are
 // fully interactive — PopupMenuItem wraps its child in IgnorePointer when
 // enabled:false, which would swallow touch events.
@@ -1311,9 +1625,8 @@ class _McpServersMenuEntry extends PopupMenuEntry<Never> {
     required this.provider,
   });
 
-  // height is used by showMenu for scroll physics; approximate per-row height.
   @override
-  double get height => servers.length * 48.0 + 36;
+  double get height => servers.length * 48.0 + 140;
 
   @override
   bool represents(Never? value) => false;
@@ -1324,11 +1637,13 @@ class _McpServersMenuEntry extends PopupMenuEntry<Never> {
 
 class _McpServersMenuEntryState extends State<_McpServersMenuEntry> {
   late List<McpServer> _servers;
+  late bool _active;
 
   @override
   void initState() {
     super.initState();
     _servers = List.of(widget.servers);
+    _active = widget.provider.mcpActive;
   }
 
   void _toggle(String id, bool value) {
@@ -1356,35 +1671,54 @@ class _McpServersMenuEntryState extends State<_McpServersMenuEntry> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-          child: Text(
-            'MCP Servers',
-            style: theme.textTheme.labelSmall
-                ?.copyWith(color: cs.onSurfaceVariant),
-          ),
+        SwitchListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+          title: const Text('Use tools'),
+          subtitle: const Text('Let the AI search the web, remember things and more'),
+          value: _active,
+          onChanged: (v) {
+            setState(() => _active = v);
+            if (widget.provider.mcpActive != v) widget.provider.toggleMcp();
+          },
         ),
-        for (int i = 0; i < _servers.length; i++) ...[
-          if (i > 0)
-            Divider(
-                height: 1,
-                indent: 16,
-                endIndent: 16,
-                color: cs.outlineVariant.withValues(alpha: 0.5)),
-          SwitchListTile(
-            dense: true,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
-            title: Text(
-              _servers[i].name,
-              style: theme.textTheme.bodyMedium,
-              overflow: TextOverflow.ellipsis,
+        if (_servers.isNotEmpty) ...[
+          Divider(height: 1, color: cs.outlineVariant.withValues(alpha: 0.6)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+            child: Text(
+              'Available tools',
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: cs.onSurfaceVariant),
             ),
-            value: _servers[i].enabled,
-            onChanged: (v) => _toggle(_servers[i].id, v),
           ),
+          for (final server in _servers)
+            SwitchListTile(
+              dense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+              title: Text(
+                server.name,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: _active ? null : cs.onSurfaceVariant,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+              value: server.enabled,
+              onChanged: _active ? (v) => _toggle(server.id, v) : null,
+            ),
         ],
-        const SizedBox(height: 6),
+        Divider(height: 1, color: cs.outlineVariant.withValues(alpha: 0.6)),
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.settings_outlined, size: 20),
+          title: const Text('Manage tools…'),
+          onTap: () {
+            final nav = Navigator.of(context);
+            nav.pop();
+            nav.push(
+              MaterialPageRoute(builder: (_) => const McpServersScreen()),
+            );
+          },
+        ),
       ],
     );
   }

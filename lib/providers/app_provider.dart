@@ -975,10 +975,18 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   // ── Settings ──────────────────────────────────────────────────────────────
 
   Future<void> updateSettings(AppSettings newSettings) async {
+    // Only forget the fetched model list when the AI endpoint itself changed;
+    // ordinary edits (colours, sliders) must not wipe it.
+    final endpointChanged = newSettings.baseUrlHome != _settings.baseUrlHome ||
+        newSettings.baseUrlAway != _settings.baseUrlAway ||
+        newSettings.apiKey != _settings.apiKey ||
+        newSettings.useBackend != _settings.useBackend;
     _settings = newSettings;
     await _storage.saveSettings(_settings);
-    _availableModels = [];
-    _lastNetworkCheck = null;
+    if (endpointChanged) {
+      _availableModels = [];
+      _lastNetworkCheck = null;
+    }
     _startAutoSync(); // restart in case interval or enabled flag changed
     // Push shared settings to backend so run_generation() picks them up.
     // Errors are swallowed — if the push fails here the settings will be

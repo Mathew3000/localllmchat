@@ -1,6 +1,7 @@
-import 'dart:async' show TimeoutException;
+import 'dart:async' show Timer, TimeoutException;
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 // dart:typed_data provided transitively via flutter/services;
 import 'package:file_picker/file_picker.dart';
 import '../services/backup_crypto.dart';
@@ -15,6 +16,7 @@ import '../models/settings.dart';
 import '../providers/app_provider.dart';
 import '../version.dart';
 import '../widgets/color_picker.dart';
+import '../widgets/friendly.dart';
 import 'mcp_servers_screen.dart';
 import 'personality_settings_screen.dart';
 
@@ -29,6 +31,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _baseUrlHomeController;
   late TextEditingController _baseUrlAwayController;
   late TextEditingController _apiKeyController;
+  late TextEditingController _modelController;
   late double _temperature;
   late int _maxTokens;
   late int _contextWindowTokens;
@@ -44,6 +47,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   AppSettings? _lastKnownSettings;
   late AppProvider _provider;
 
+  /// Pending auto-save. Changes are saved shortly after the user stops
+  /// editing, and immediately when the screen is closed.
+  Timer? _saveTimer;
+
   @override
   void initState() {
     super.initState();
@@ -51,6 +58,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _baseUrlHomeController = TextEditingController();
     _baseUrlAwayController = TextEditingController();
     _apiKeyController = TextEditingController();
+    _modelController = TextEditingController();
     _temperature = 0.7;
     _maxTokens = 2048;
     _contextWindowTokens = 32768;
@@ -58,13 +66,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _requestTimeoutSeconds = 300;
     _loadFromSettings(_provider.settings);
     _provider.addListener(_onProviderChanged);
+
+    // Load the model list automatically so the user doesn't have to know
+    // about the "Fetch" button.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final s = _provider.settings;
+      final canFetch = s.useBackend
+          ? _provider.backendConnected
+          : s.baseUrlHome.isNotEmpty;
+      if (mounted &&
+          canFetch &&
+          _provider.availableModels.isEmpty &&
+          !_provider.fetchingModels) {
+        _provider.fetchModels();
+      }
+    });
+  }
+
+  void _setText(TextEditingController c, String v) {
+    if (c.text != v) c.text = v;
   }
 
   void _loadFromSettings(AppSettings s) {
     _lastKnownSettings = s;
-    _baseUrlHomeController.text = s.baseUrlHome;
-    _baseUrlAwayController.text = s.baseUrlAway;
-    _apiKeyController.text = s.apiKey;
+    _setText(_baseUrlHomeController, s.baseUrlHome);
+    _setText(_baseUrlAwayController, s.baseUrlAway);
+    _setText(_apiKeyController, s.apiKey);
+    _setText(_modelController, s.selectedModel);
     _temperature = s.temperature;
     _maxTokens = s.maxTokens;
     _contextWindowTokens = s.contextWindowTokens;
@@ -79,378 +107,572 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _onProviderChanged() {
     if (!mounted) return;
+    // Don't overwrite edits that are still waiting to be saved.
+    if (_saveTimer?.isActive ?? false) return;
     final s = _provider.settings;
     if (!identical(s, _lastKnownSettings)) {
       setState(() => _loadFromSettings(s));
     }
   }
 
+  /// Apply a form change and schedule an auto-save.
+  void _changed(VoidCallback fn) {
+    setState(fn);
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 700), _persist);
+  }
+
+  Future<void> _persist() async {
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    // Use copyWith so any fields not managed by this form (personalities,
+    // mcpServers, sync tokens, backend credentials, etc.) are preserved.
+    final updated = _provider.settings.copyWith(
+      baseUrlHome: _baseUrlHomeController.text.trim(),
+      baseUrlAway: _baseUrlAwayController.text.trim(),
+      apiKey: _apiKeyController.text.trim(),
+      selectedModel: _selectedModel ?? '',
+      temperature: _temperature,
+      maxTokens: _maxTokens,
+      backgroundColor: _globalBgColor,
+      defaultUserBubbleColor: _defaultUserBubbleColor,
+      defaultAssistantBubbleColor: _defaultAssistantBubbleColor,
+      highlightColor: _highlightColor,
+      requestTimeoutSeconds: _requestTimeoutSeconds,
+      contextWindowTokens: _contextWindowTokens,
+      allowSelfSigned: _allowSelfSigned,
+    );
+    _lastKnownSettings = updated;
+    await _provider.updateSettings(updated);
+  }
+
   @override
   void dispose() {
     _provider.removeListener(_onProviderChanged);
+    // Flush unsaved edits (reads the controllers synchronously).
+    if (_saveTimer?.isActive ?? false) _persist();
     _baseUrlHomeController.dispose();
     _baseUrlAwayController.dispose();
     _apiKeyController.dispose();
+    _modelController.dispose();
     super.dispose();
   }
 
-  Future<void> _save() async {
-    final provider = context.read<AppProvider>();
-    final s = provider.settings;
-    // Use copyWith so any fields not managed by this form (personalities,
-    // mcpServers, sync tokens, backend credentials, etc.) are preserved.
-    await provider.updateSettings(
-      s.copyWith(
-        baseUrlHome: _baseUrlHomeController.text.trim(),
-        baseUrlAway: _baseUrlAwayController.text.trim(),
-        apiKey: _apiKeyController.text.trim(),
-        selectedModel: _selectedModel ?? '',
-        temperature: _temperature,
-        maxTokens: _maxTokens,
-        backgroundColor: _globalBgColor,
-        defaultUserBubbleColor: _defaultUserBubbleColor,
-        defaultAssistantBubbleColor: _defaultAssistantBubbleColor,
-        highlightColor: _highlightColor,
-        requestTimeoutSeconds: _requestTimeoutSeconds,
-        contextWindowTokens: _contextWindowTokens,
-        allowSelfSigned: _allowSelfSigned,
-      ),
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Settings saved'),
-          behavior: SnackBarBehavior.floating,
-          duration: Duration(seconds: 1),
-        ),
-      );
-      Navigator.pop(context);
-    }
-  }
+  // ── Presets shown to everyday users ──────────────────────────────────────
+  static const _creativityPresets = <(String, double)>[
+    ('Precise', 0.2),
+    ('Balanced', 0.7),
+    ('Creative', 1.1),
+  ];
+  static const _lengthPresets = <(String, int)>[
+    ('Short', 1024),
+    ('Normal', 4096),
+    ('Long', 8192),
+    ('Very long', 16384),
+  ];
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings'),
-        actions: [
-          TextButton(
-            onPressed: _save,
-            child: Text(
-              'Save',
-              style: TextStyle(
-                  color: theme.colorScheme.primary,
-                  fontWeight: FontWeight.w600),
+      appBar: AppBar(title: const Text('Settings')),
+      body: Consumer<AppProvider>(
+        builder: (context, provider, _) {
+          final s = provider.settings;
+          final conn = connectionState(provider);
+          return ListView(
+            padding: EdgeInsets.fromLTRB(
+              16, 8, 16,
+              16 + MediaQuery.viewPaddingOf(context).bottom,
             ),
-          ),
-        ],
-      ),
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(
-          16, 16, 16,
-          16 + MediaQuery.viewPaddingOf(context).bottom,
-        ),
-        children: [
-          const _SectionHeader(title: 'Backend Server'),
-          const _BackendCard(),
-          const SizedBox(height: 8),
-          const _SectionHeader(title: 'Connection'),
-          _SettingsCard(
             children: [
-              _LabeledField(
-                label: 'Home URL',
-                child: TextField(
-                  controller: _baseUrlHomeController,
-                  keyboardType: TextInputType.url,
-                  decoration: const InputDecoration(
-                    hintText: 'http://192.168.1.100:5000/v1',
-                    helperText: 'Local / Wi-Fi address',
-                  ),
+              _StatusCard(conn: conn),
+              const SizedBox(height: 20),
+
+              // ── Everyday chat options ──────────────────────────────────
+              const _SectionHeader(title: 'Chat'),
+              _SettingsCard(children: [
+                _buildModelPicker(provider),
+                const Divider(height: 1),
+                _PresetChoice<double>(
+                  icon: Icons.palette_outlined,
+                  title: 'Creativity',
+                  subtitle: 'Precise sticks to facts, Creative is more imaginative',
+                  options: _creativityPresets,
+                  isSelected: (v) => (v - _temperature).abs() < 0.05,
+                  onSelected: (v) => _changed(() => _temperature = v),
                 ),
+                const Divider(height: 1),
+                _PresetChoice<int>(
+                  icon: Icons.short_text_rounded,
+                  title: 'Reply length',
+                  subtitle: 'The longest a single answer can be',
+                  options: _lengthPresets,
+                  isSelected: (v) => v == _maxTokens,
+                  onSelected: (v) => _changed(() => _maxTokens = v),
+                ),
+                const Divider(height: 1),
+                SwitchListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  secondary: const Icon(Icons.calendar_today_outlined),
+                  title: const Text("Tell the AI today's date"),
+                  subtitle: const Text('Helps with questions like "what day is it?"'),
+                  value: s.injectDateTime,
+                  onChanged: (v) =>
+                      provider.updateSettings(s.copyWith(injectDateTime: v)),
+                ),
+              ]),
+              const SizedBox(height: 12),
+              const _PersonalitiesNavTile(),
+              const SizedBox(height: 8),
+              const _McpNavTile(),
+              const SizedBox(height: 8),
+              const _FileMcpTile(),
+              const SizedBox(height: 20),
+
+              // ── Look & feel ───────────────────────────────────────────
+              _ExpandableSection(
+                key: const ValueKey('sec-appearance'),
+                icon: Icons.color_lens_outlined,
+                title: 'Appearance',
+                subtitle: 'Colours of the chat and message bubbles',
+                children: [
+                  _ColorSection(
+                    icon: Icons.format_paint_outlined,
+                    label: 'Chat background',
+                    current: _globalBgColor,
+                    onPick: (c) => _changed(() => _globalBgColor = c),
+                  ),
+                  const Divider(height: 1),
+                  _ColorSection(
+                    icon: Icons.person_rounded,
+                    label: 'Your messages',
+                    current: _defaultUserBubbleColor,
+                    onPick: (c) => _changed(() => _defaultUserBubbleColor = c),
+                  ),
+                  const Divider(height: 1),
+                  _ColorSection(
+                    icon: Icons.auto_awesome_rounded,
+                    label: 'AI messages',
+                    current: _defaultAssistantBubbleColor,
+                    onPick: (c) =>
+                        _changed(() => _defaultAssistantBubbleColor = c),
+                  ),
+                  const Divider(height: 1),
+                  _ColorSection(
+                    icon: Icons.highlight_rounded,
+                    label: 'Highlighted text',
+                    current: _highlightColor,
+                    onPick: (c) => _changed(() => _highlightColor = c),
+                  ),
+                ],
               ),
-              Consumer<AppProvider>(
-                builder: (_, provider, __) {
-                  if (provider.settings.useBackend) return const SizedBox.shrink();
-                  return Column(
-                    children: [
-                      const Divider(height: 1),
-                      _LabeledField(
-                        label: 'Away URL',
-                        child: TextField(
-                          controller: _baseUrlAwayController,
-                          keyboardType: TextInputType.url,
-                          decoration: const InputDecoration(
-                            hintText: 'http://100.x.x.x:5000/v1',
-                            helperText: 'WireGuard / Tailscale — optional',
-                          ),
-                        ),
+              const SizedBox(height: 20),
+
+              // ── Privacy & data ────────────────────────────────────────
+              const _SectionHeader(title: 'Privacy & data'),
+              const _SecretChatsCard(),
+              if (!s.useBackend) ...[
+                const SizedBox(height: 8),
+                const _SyncCard(),
+              ],
+              const SizedBox(height: 8),
+              const _BackupCard(),
+              const SizedBox(height: 20),
+
+              // ── Setup & expert options ────────────────────────────────
+              const _SectionHeader(title: 'Setup'),
+              _ExpandableSection(
+                key: const ValueKey('sec-connection'),
+                icon: Icons.dns_outlined,
+                title: 'Connection',
+                subtitle: 'Where your AI runs and how to reach it',
+                initiallyExpanded: conn == ConnState.notSetUp,
+                children: [
+                  const _BackendCard(),
+                  const Divider(height: 1),
+                  _buildDirectConnection(s),
+                ],
+              ),
+              const SizedBox(height: 8),
+              _ExpandableSection(
+                key: const ValueKey('sec-advanced'),
+                icon: Icons.tune_rounded,
+                title: 'Advanced',
+                subtitle: 'Exact values for experienced users',
+                children: _buildAdvanced(provider),
+              ),
+              const SizedBox(height: 8),
+              const _ExpandableSection(
+                key: ValueKey('sec-debug'),
+                icon: Icons.bug_report_outlined,
+                title: 'Troubleshooting',
+                subtitle: 'Record a log file to help find problems',
+                children: [_DebugCard()],
+              ),
+              const SizedBox(height: 32),
+              Center(
+                child: Text(
+                  'LoomChat $kAppVersion · changes are saved automatically',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurfaceVariant
+                            .withValues(alpha: 0.6),
                       ),
-                    ],
-                  );
-                },
-              ),
-              const Divider(height: 1),
-              _LabeledField(
-                label: 'API Key',
-                child: TextField(
-                  controller: _apiKeyController,
-                  obscureText: !_apiKeyVisible,
-                  decoration: InputDecoration(
-                    hintText: 'Optional',
-                    suffixIcon: IconButton(
-                      icon: Icon(_apiKeyVisible
-                          ? Icons.visibility_off_outlined
-                          : Icons.visibility_outlined),
-                      onPressed: () =>
-                          setState(() => _apiKeyVisible = !_apiKeyVisible),
-                    ),
-                  ),
                 ),
               ),
-              const Divider(height: 1),
-              SwitchListTile(
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                title: const Text('Allow self-signed certificate'),
-                subtitle: const Text(
-                  'Disable TLS validation for the LLM API (use on private networks only)',
-                ),
-                value: _allowSelfSigned,
-                onChanged: (v) => setState(() => _allowSelfSigned = v),
-              ),
+              const SizedBox(height: 16),
             ],
-          ),
-          const SizedBox(height: 16),
-          const _SectionHeader(title: 'Model'),
-          _SettingsCard(
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildModelPicker(AppProvider provider) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final models = provider.availableModels;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Consumer<AppProvider>(
-                builder: (_, provider, __) => Column(
+              Icon(Icons.memory_rounded, color: cs.onSurfaceVariant),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _LabeledField(
-                            label: 'Selected Model',
-                            child: provider.availableModels.isEmpty
-                                ? TextField(
-                                    decoration: InputDecoration(
-                                      hintText: _selectedModel ??
-                                          'Fetch models first',
-                                    ),
-                                    onChanged: (v) =>
-                                        setState(() => _selectedModel = v),
-                                    controller: TextEditingController(
-                                        text: _selectedModel ?? ''),
-                                  )
-                                : DropdownButtonFormField<String>(
-                                    initialValue: provider.availableModels
-                                            .contains(_selectedModel)
-                                        ? _selectedModel
-                                        : provider.availableModels.first,
-                                    items: provider.availableModels
-                                        .map((m) => DropdownMenuItem(
-                                            value: m,
-                                            child: Text(m,
-                                                overflow:
-                                                    TextOverflow.ellipsis)))
-                                        .toList(),
-                                    onChanged: (v) =>
-                                        setState(() => _selectedModel = v),
-                                    decoration: const InputDecoration(
-                                        border: InputBorder.none),
-                                  ),
-                          ),
+                    Text('AI model', style: theme.textTheme.bodyLarge),
+                    if (models.isEmpty)
+                      TextField(
+                        controller: _modelController,
+                        decoration: InputDecoration(
+                          isDense: true,
+                          hintText: provider.fetchingModels
+                              ? 'Loading models…'
+                              : 'Type a model name or tap refresh',
                         ),
-                        FilledButton.tonalIcon(
-                          onPressed: provider.fetchingModels
-                              ? null
-                              : () {
-                                  provider.updateSettings(
-                                    provider.settings.copyWith(
-                                      baseUrlHome:
-                                          _baseUrlHomeController.text.trim(),
-                                      baseUrlAway:
-                                          _baseUrlAwayController.text.trim(),
-                                      apiKey:
-                                          _apiKeyController.text.trim(),
-                                    ),
-                                  );
-                                  provider.fetchModels();
-                                },
-                          icon: provider.fetchingModels
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2),
-                                )
-                              : const Icon(Icons.refresh_rounded),
-                          label: Text(
-                              provider.fetchingModels ? 'Loading…' : 'Fetch'),
-                        ),
-                      ],
-                    ),
-                    if (provider.error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          provider.error!,
-                          style: TextStyle(
-                              color: Theme.of(context).colorScheme.error,
-                              fontSize: 12),
-                        ),
+                        onChanged: (v) => _changed(() =>
+                            _selectedModel = v.trim().isEmpty ? null : v.trim()),
+                      )
+                    else
+                      DropdownButton<String>(
+                        isExpanded: true,
+                        isDense: true,
+                        underline: const SizedBox.shrink(),
+                        value: models.contains(_selectedModel)
+                            ? _selectedModel
+                            : null,
+                        hint: const Text('Choose a model'),
+                        items: models
+                            .map((m) => DropdownMenuItem(
+                                  value: m,
+                                  child: Text(friendlyModelName(m),
+                                      overflow: TextOverflow.ellipsis),
+                                ))
+                            .toList(),
+                        onChanged: (v) => _changed(() => _selectedModel = v),
                       ),
                   ],
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          const _SectionHeader(title: 'Generation'),
-          _SettingsCard(
-            children: [
-              _SliderField(
-                label: 'Temperature',
-                value: _temperature,
-                min: 0,
-                max: 2,
-                displayValue: _temperature.toStringAsFixed(2),
-                onChanged: (v) => setState(() => _temperature = v),
-              ),
-              const Divider(height: 1),
-              _MaxTokensField(
-                value: _maxTokens,
-                onChanged: (v) => setState(() => _maxTokens = v),
-              ),
-              const Divider(height: 1),
-              _ContextWindowField(
-                value: _contextWindowTokens,
-                onChanged: (v) => setState(() => _contextWindowTokens = v),
-              ),
-              const Divider(height: 1),
-              _TimeoutField(
-                value: _requestTimeoutSeconds,
-                onChanged: (v) => setState(() => _requestTimeoutSeconds = v),
-              ),
-              const Divider(height: 1),
-              Consumer<AppProvider>(
-                builder: (_, provider, __) => SwitchListTile(
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  secondary: const Icon(Icons.schedule_rounded),
-                  title: const Text('Inject date & time'),
-                  subtitle: Text(
-                    'Appends the current date and time to the system prompt',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                  ),
-                  value: provider.settings.injectDateTime,
-                  onChanged: (v) => provider.updateSettings(
-                    provider.settings.copyWith(injectDateTime: v),
-                  ),
-                ),
-              ),
-              const Divider(height: 1),
-              Consumer<AppProvider>(
-                builder: (_, provider, __) => SwitchListTile(
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  secondary: const Icon(Icons.psychology_outlined),
-                  title: const Text('Preserve thinking history'),
-                  subtitle: Text(
-                    'Passes reasoning tokens back to the model in subsequent turns (Qwen3, DeepSeek-R1)',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                  ),
-                  value: provider.settings.preserveThinking,
-                  onChanged: (v) => provider.updateSettings(
-                    provider.settings.copyWith(preserveThinking: v),
-                  ),
-                ),
+              IconButton(
+                tooltip: 'Reload model list',
+                onPressed: provider.fetchingModels
+                    ? null
+                    : () async {
+                        await _persist();
+                        provider.fetchModels();
+                      },
+                icon: provider.fetchingModels
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh_rounded),
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          const _SectionHeader(title: 'Personalities'),
-          const _PersonalitiesNavTile(),
-          const SizedBox(height: 16),
-          const _SectionHeader(title: 'MCP Tools'),
-          const _McpNavTile(),
-          const SizedBox(height: 8),
-          const _FileMcpTile(),
-          const SizedBox(height: 16),
-          _ExpandableSection(
-            title: 'Appearance',
-            children: [
-              _ColorSection(
-                icon: Icons.format_paint_outlined,
-                label: 'Chat background',
-                current: _globalBgColor,
-                onPick: (c) => setState(() => _globalBgColor = c),
+          if (provider.error != null)
+            Padding(
+              padding: const EdgeInsets.only(left: 40, top: 6, right: 8),
+              child: Text(
+                friendlyError(provider.error!).message,
+                style: TextStyle(color: cs.error, fontSize: 12),
               ),
-              const Divider(height: 1),
-              _ColorSection(
-                icon: Icons.person_rounded,
-                label: 'User bubbles (default)',
-                current: _defaultUserBubbleColor,
-                onPick: (c) => setState(() => _defaultUserBubbleColor = c),
-              ),
-              const Divider(height: 1),
-              _ColorSection(
-                icon: Icons.auto_awesome_rounded,
-                label: 'AI bubbles (default)',
-                current: _defaultAssistantBubbleColor,
-                onPick: (c) => setState(() => _defaultAssistantBubbleColor = c),
-              ),
-              const Divider(height: 1),
-              _ColorSection(
-                icon: Icons.highlight_rounded,
-                label: 'Inline highlights (==text== / <mark>)',
-                current: _highlightColor,
-                onPick: (c) => setState(() => _highlightColor = c),
-              ),
-            ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDirectConnection(AppSettings s) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+          child: Text(
+            s.useBackend ? 'AI server (used by your LoomChat server)' : 'AI server',
+            style: theme.textTheme.titleSmall,
           ),
-          const SizedBox(height: 16),
-          const _SectionHeader(title: 'Privacy'),
-          const _SecretChatsCard(),
-          Consumer<AppProvider>(
-            builder: (_, provider, __) {
-              if (provider.settings.useBackend) return const SizedBox.shrink();
-              return const Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(height: 16),
-                  _SectionHeader(title: 'Sync'),
-                  _SyncCard(),
-                ],
-              );
-            },
+        ),
+        _LabeledField(
+          label: 'AI server address',
+          child: TextField(
+            controller: _baseUrlHomeController,
+            keyboardType: TextInputType.url,
+            decoration: const InputDecoration(
+              hintText: 'http://192.168.1.100:5000/v1',
+              helperText: 'The address of the computer running your AI model',
+            ),
+            onChanged: (_) => _changed(() {}),
           ),
-          const SizedBox(height: 16),
-          const _SectionHeader(title: 'Backup & Restore'),
-          const _BackupCard(),
-          const SizedBox(height: 16),
-          const _SectionHeader(title: 'Debug'),
-          const _DebugCard(),
-          const SizedBox(height: 48),
-          Center(
-            child: Text(
-              'LoomChat $kAppVersion',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurfaceVariant
-                        .withValues(alpha: 0.55),
-                  ),
+        ),
+        if (!s.useBackend)
+          _LabeledField(
+            label: 'Address when away from home (optional)',
+            child: TextField(
+              controller: _baseUrlAwayController,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                hintText: 'http://100.x.x.x:5000/v1',
+                helperText: 'Used automatically when the home address cannot be reached (e.g. via VPN)',
+              ),
+              onChanged: (_) => _changed(() {}),
             ),
           ),
-          const SizedBox(height: 16),
+        _LabeledField(
+          label: 'API key (optional)',
+          child: TextField(
+            controller: _apiKeyController,
+            obscureText: !_apiKeyVisible,
+            decoration: InputDecoration(
+              hintText: 'Only needed if your AI server asks for one',
+              suffixIcon: IconButton(
+                tooltip: _apiKeyVisible ? 'Hide' : 'Show',
+                icon: Icon(_apiKeyVisible
+                    ? Icons.visibility_off_outlined
+                    : Icons.visibility_outlined),
+                onPressed: () =>
+                    setState(() => _apiKeyVisible = !_apiKeyVisible),
+              ),
+            ),
+            onChanged: (_) => _changed(() {}),
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+
+  List<Widget> _buildAdvanced(AppProvider provider) {
+    final s = provider.settings;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final tooLong = _maxTokens >= _contextWindowTokens;
+    return [
+      _SliderField(
+        label: 'Temperature',
+        value: _temperature.clamp(0.0, 2.0),
+        min: 0,
+        max: 2,
+        displayValue: _temperature.toStringAsFixed(2),
+        onChanged: (v) => _changed(() => _temperature = v),
+      ),
+      const Divider(height: 1),
+      _MaxTokensField(
+        value: _maxTokens,
+        onChanged: (v) => _changed(() => _maxTokens = v),
+      ),
+      if (tooLong || _maxTokens > 32768)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.warning_amber_rounded, size: 16, color: cs.error),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  tooLong
+                      ? 'Max tokens is as large as the whole context window. '
+                          'Many servers reject or crash on this — use 4096–16384.'
+                      : 'Very large values make some servers drop the connection. '
+                          '4096–16384 is usually plenty.',
+                  style: theme.textTheme.bodySmall?.copyWith(color: cs.error),
+                ),
+              ),
+            ],
+          ),
+        ),
+      const Divider(height: 1),
+      _ContextWindowField(
+        value: _contextWindowTokens,
+        onChanged: (v) => _changed(() => _contextWindowTokens = v),
+      ),
+      const Divider(height: 1),
+      _TimeoutField(
+        value: _requestTimeoutSeconds,
+        onChanged: (v) => _changed(() => _requestTimeoutSeconds = v),
+      ),
+      const Divider(height: 1),
+      SwitchListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        title: const Text('Preserve thinking history'),
+        subtitle: const Text(
+            'Send the model its earlier reasoning again (Qwen3, DeepSeek-R1)'),
+        value: s.preserveThinking,
+        onChanged: (v) =>
+            provider.updateSettings(s.copyWith(preserveThinking: v)),
+      ),
+      const Divider(height: 1),
+      SwitchListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        title: const Text('Allow self-signed certificate (AI server)'),
+        subtitle: const Text(
+            'Skip TLS certificate checks for the AI server. Private networks only.'),
+        value: _allowSelfSigned,
+        onChanged: (v) => _changed(() => _allowSelfSigned = v),
+      ),
+    ];
+  }
+}
+
+// ── Status card at the top of settings ───────────────────────────────────────
+
+class _StatusCard extends StatelessWidget {
+  final ConnState conn;
+  const _StatusCard({required this.conn});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final p = context.watch<AppProvider>();
+    final s = p.settings;
+    final good = conn == ConnState.ok || conn == ConnState.away;
+    final model = friendlyModelName(s.selectedModel);
+
+    final String detail;
+    if (conn == ConnState.notSetUp) {
+      detail = 'Open "Connection" below to connect LoomChat to your AI.';
+    } else if (conn == ConnState.offline) {
+      detail = p.backendConnectError != null
+          ? friendlyError(p.backendConnectError!).message
+          : 'Check that the server is running and you are online.';
+    } else {
+      detail = model.isEmpty ? 'No AI model chosen yet' : 'Using $model';
+    }
+
+    final bg = good ? cs.primaryContainer : cs.errorContainer;
+    final fg = good ? cs.onPrimaryContainer : cs.onErrorContainer;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      color: bg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Icon(
+              good ? Icons.check_circle_rounded : Icons.error_outline_rounded,
+              color: fg,
+              size: 32,
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    connectionTitle(conn, backend: s.useBackend),
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(color: fg, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(detail,
+                      style: theme.textTheme.bodySmall?.copyWith(color: fg)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Row of preset chips ("Short / Normal / Long") ────────────────────────────
+
+class _PresetChoice<T> extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final List<(String, T)> options;
+  final bool Function(T) isSelected;
+  final ValueChanged<T> onSelected;
+
+  const _PresetChoice({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.options,
+    required this.isSelected,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final anySelected = options.any((o) => isSelected(o.$2));
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: cs.onSurfaceVariant),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: theme.textTheme.bodyLarge),
+                Text(subtitle,
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: cs.onSurfaceVariant)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    for (final o in options)
+                      ChoiceChip(
+                        label: Text(o.$1),
+                        selected: isSelected(o.$2),
+                        onSelected: (_) => onSelected(o.$2),
+                      ),
+                    if (!anySelected)
+                      Chip(
+                        label: const Text('Custom'),
+                        avatar: const Icon(Icons.tune_rounded, size: 16),
+                        backgroundColor: cs.secondaryContainer,
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -909,54 +1131,48 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-class _ExpandableSection extends StatefulWidget {
+class _ExpandableSection extends StatelessWidget {
+  final IconData icon;
   final String title;
+  final String? subtitle;
   final List<Widget> children;
-  const _ExpandableSection({required this.title, required this.children});
-
-  @override
-  State<_ExpandableSection> createState() => _ExpandableSectionState();
-}
-
-class _ExpandableSectionState extends State<_ExpandableSection> {
-  bool _expanded = false;
+  final bool initiallyExpanded;
+  const _ExpandableSection({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.children,
+    this.subtitle,
+    this.initiallyExpanded = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        GestureDetector(
-          onTap: () => setState(() => _expanded = !_expanded),
-          behavior: HitTestBehavior.opaque,
-          child: Padding(
-            padding: const EdgeInsets.only(left: 4, bottom: 8),
-            child: Row(
-              children: [
-                Text(
-                  widget.title.toUpperCase(),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: cs.primary,
-                    letterSpacing: 1.2,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Icon(
-                  _expanded
-                      ? Icons.expand_less_rounded
-                      : Icons.expand_more_rounded,
-                  size: 14,
-                  color: cs.primary,
-                ),
-              ],
-            ),
-          ),
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        // Remove ExpansionTile's own top/bottom divider lines.
+        data: theme.copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          leading: Icon(icon, color: cs.primary),
+          title: Text(title),
+          subtitle: subtitle == null
+              ? null
+              : Text(subtitle!,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: cs.onSurfaceVariant)),
+          initiallyExpanded: initiallyExpanded,
+          childrenPadding: EdgeInsets.zero,
+          expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Divider(height: 1, color: cs.outlineVariant),
+            ...children,
+          ],
         ),
-        if (_expanded) _SettingsCard(children: widget.children),
-      ],
+      ),
     );
   }
 }
@@ -1090,6 +1306,19 @@ class _SliderField extends StatelessWidget {
   }
 }
 
+// Logarithmic slider mapping so small values get as much room as large ones.
+double _logToSlider(int v, int min, int max) {
+  final c = v.clamp(min, max);
+  return (math.log(c) - math.log(min)) / (math.log(max) - math.log(min));
+}
+
+int _logFromSlider(double s, int min, int max) {
+  final raw = math.exp(math.log(min) + s * (math.log(max) - math.log(min)));
+  // Snap to multiples of 256 (or 128 at the very low end) for tidy numbers.
+  final step = raw < 1024 ? 128 : 256;
+  return ((raw / step).round() * step).clamp(min, max);
+}
+
 // ── Max tokens: slider + editable text field ──────────────────────────────────
 
 class _MaxTokensField extends StatefulWidget {
@@ -1110,11 +1339,8 @@ class _MaxTokensFieldState extends State<_MaxTokensField> {
 
   // Slider uses a log scale so the low end isn't squished into nothing.
   // We map the slider's 0‥1 range → 128‥262144 logarithmically.
-  static double _toSlider(int v) =>
-      (v.clamp(_min, _max) - _min) / (_max - _min);
-
-  static int _fromSlider(double s) =>
-      (_min + (s * (_max - _min))).round().clamp(_min, _max);
+  static double _toSlider(int v) => _logToSlider(v, _min, _max);
+  static int _fromSlider(double s) => _logFromSlider(s, _min, _max);
 
   @override
   void initState() {
@@ -1157,7 +1383,7 @@ class _MaxTokensFieldState extends State<_MaxTokensField> {
           Row(
             children: [
               Expanded(
-                child: Text('Max Tokens',
+                child: Text('Max tokens (reply length)',
                     style: theme.textTheme.bodyMedium),
               ),
               SizedBox(
@@ -1234,10 +1460,8 @@ class _ContextWindowFieldState extends State<_ContextWindowField> {
 
   late final TextEditingController _textController;
 
-  static double _toSlider(int v) =>
-      (v.clamp(_min, _max) - _min) / (_max - _min);
-  static int _fromSlider(double s) =>
-      (_min + (s * (_max - _min))).round().clamp(_min, _max);
+  static double _toSlider(int v) => _logToSlider(v, _min, _max);
+  static int _fromSlider(double s) => _logFromSlider(s, _min, _max);
 
   @override
   void initState() {
@@ -1277,7 +1501,7 @@ class _ContextWindowFieldState extends State<_ContextWindowField> {
         children: [
           Row(
             children: [
-              Expanded(child: Text('Context Window', style: theme.textTheme.bodyMedium)),
+              Expanded(child: Text('Context window (memory)', style: theme.textTheme.bodyMedium)),
               SizedBox(
                 width: 90,
                 child: TextField(
@@ -1382,7 +1606,7 @@ class _TimeoutFieldState extends State<_TimeoutField> {
           Row(
             children: [
               Expanded(
-                child: Text('Request Timeout',
+                child: Text('Wait time for a reply',
                     style: theme.textTheme.bodyMedium),
               ),
               SizedBox(
@@ -2176,7 +2400,8 @@ class _DebugCardState extends State<_DebugCard> {
         final s = provider.settings;
         final logFile = DebugLogger.instance.currentFile;
 
-        return _SettingsCard(
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // ── Warning banner ──────────────────────────────────────────────
             if (s.debugLogging)
@@ -2391,11 +2616,11 @@ class _FileMcpTile extends StatelessWidget {
               Icons.folder_open_outlined,
               color: enabled ? cs.tertiary : cs.onSurfaceVariant,
             ),
-            title: const Text('Local folder access'),
+            title: const Text('Let the AI read a folder'),
             subtitle: Text(
               enabled
-                  ? 'Folder picker shown in chat — select a folder to let the AI browse files.'
-                  : 'Enable to grant the AI access to a local folder via a picker in the chat input.',
+                  ? 'A folder button appears next to the message box. The AI can only see the folder you pick.'
+                  : 'Adds a folder button next to the message box so the AI can look at your files.',
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: cs.onSurfaceVariant),
             ),
@@ -2441,7 +2666,7 @@ class _PersonalitiesNavTile extends StatelessWidget {
               color: Theme.of(context).colorScheme.primary,
             ),
             title: const Text('Personalities'),
-            subtitle: Text(subtitle),
+            subtitle: Text('Assistants with their own instructions and tools · $subtitle'),
             trailing: const Icon(Icons.chevron_right_rounded),
             onTap: () => Navigator.push(
               context,
@@ -2471,14 +2696,22 @@ class _McpNavTile extends StatelessWidget {
         final toolCount = provider.mcpTools.length;
         final loading = provider.fetchingMcpTools;
 
+        final names = provider.settings.mcpServers
+            .where((s) => s.enabled)
+            .map((s) => s.name)
+            .toList();
         String subtitle;
         if (serverCount == 0) {
-          subtitle = 'No servers configured';
+          subtitle = 'Give the AI extra abilities, like web search';
         } else if (loading) {
-          subtitle = '$serverCount server${serverCount == 1 ? '' : 's'} · loading tools…';
+          subtitle = 'Loading…';
+        } else if (names.isEmpty) {
+          subtitle = 'All tools are switched off';
         } else {
-          subtitle =
-              '$serverCount server${serverCount == 1 ? '' : 's'} · $toolCount tool${toolCount == 1 ? '' : 's'} loaded';
+          final shown = names.take(3).join(', ');
+          subtitle = names.length > 3
+              ? '$shown and ${names.length - 3} more'
+              : shown;
         }
 
         return Card(
@@ -2488,8 +2721,8 @@ class _McpNavTile extends StatelessWidget {
               Icons.extension_outlined,
               color: toolCount > 0 ? cs.primary : cs.onSurfaceVariant,
             ),
-            title: const Text('MCP Servers'),
-            subtitle: Text(subtitle),
+            title: const Text('Tools'),
+            subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
             trailing: loading
                 ? SizedBox(
                     width: 18,
@@ -2780,7 +3013,7 @@ class _BackendCardState extends State<_BackendCard> {
     final user = _userCtrl.text.trim();
     final pass = _passCtrl.text;
     if (url.isEmpty || user.isEmpty || pass.isEmpty) {
-      setState(() => _error = 'URL, username and password are required.');
+      setState(() => _error = 'Please fill in the server address, username and password.');
       return;
     }
     setState(() {
@@ -2900,14 +3133,15 @@ class _BackendCardState extends State<_BackendCard> {
         final s = p.settings;
         final loggedIn = s.backendToken.isNotEmpty;
 
-        return _SettingsCard(children: [
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           // ── Enable toggle ────────────────────────────────────────────────
           SwitchListTile(
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-            title: const Text('Use backend for generation'),
-            subtitle: const Text(
-                'Generation runs on the server — stays alive if you leave Wi-Fi'),
+            title: const Text('Use my LoomChat server'),
+            subtitle: Text(loggedIn
+                ? 'Replies keep coming even if you close the app or lose Wi-Fi'
+                : 'Sign in below first'),
             value: s.useBackend,
             onChanged: loggedIn
                 ? (v) async {
@@ -2933,9 +3167,9 @@ class _BackendCardState extends State<_BackendCard> {
                   keyboardType: TextInputType.url,
                   enabled: !loggedIn,
                   decoration: const InputDecoration(
-                    labelText: 'Home URL',
+                    labelText: 'LoomChat server address',
                     hintText: 'https://192.168.1.50',
-                    helperText: 'LAN address',
+                    helperText: 'Ask whoever set up your server if unsure',
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -2943,9 +3177,9 @@ class _BackendCardState extends State<_BackendCard> {
                   controller: _awayUrlCtrl,
                   keyboardType: TextInputType.url,
                   decoration: const InputDecoration(
-                    labelText: 'Away URL',
+                    labelText: 'Address when away from home (optional)',
                     hintText: 'https://vpn.example.com',
-                    helperText: 'VPN / Tailscale — used when Home URL is unreachable',
+                    helperText: 'Used automatically when the main address cannot be reached',
                   ),
                   onSubmitted: (_) => _saveAwayUrl(),
                   onTapOutside: (_) => _saveAwayUrl(),
@@ -2954,6 +3188,8 @@ class _BackendCardState extends State<_BackendCard> {
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Allow self-signed certificate'),
+                  subtitle: const Text(
+                      'Turn on if your server uses its own certificate'),
                   value: s.backendAllowSelfSigned,
                   onChanged: (v) => p.setBackendAllowSelfSigned(v),
                 ),
@@ -3016,14 +3252,14 @@ class _BackendCardState extends State<_BackendCard> {
                                       strokeWidth: 2,
                                       color: Colors.white),
                                 )
-                              : const Text('Login'),
+                              : const Text('Sign in'),
                         ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: OutlinedButton(
                           onPressed: _busy ? null : () => _doLogin(true),
-                          child: const Text('Register'),
+                          child: const Text('Create account'),
                         ),
                       ),
                     ],
@@ -3031,7 +3267,7 @@ class _BackendCardState extends State<_BackendCard> {
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
                     child: Text(
-                      'Register creates the first account on a fresh backend.',
+                      'Only use "Create account" the first time you set up a new server.',
                       style: theme.textTheme.bodySmall
                           ?.copyWith(color: cs.onSurfaceVariant),
                     ),
@@ -3049,19 +3285,20 @@ class _BackendCardState extends State<_BackendCard> {
                 color: p.backendConnected ? cs.primary : cs.error,
               ),
               title: Text(p.backendConnected
-                  ? 'Connected to ${p.backendUsingAway && s.backendAwayUrl.isNotEmpty ? s.backendAwayUrl : s.backendUrl}'
-                  : 'Disconnected'),
+                  ? 'Signed in'
+                  : 'Signed in, but not connected'),
               subtitle: p.backendConnectError != null
-                  ? Text(p.backendConnectError!,
+                  ? Text(friendlyError(p.backendConnectError!).message,
                       style: TextStyle(color: cs.error, fontSize: 12))
-                  : p.backendUsingAway && s.backendAwayUrl.isNotEmpty
-                      ? Text('Using away URL',
-                          style: TextStyle(
-                              color: cs.secondary, fontSize: 12))
-                      : null,
+                  : Text(
+                      p.backendUsingAway && s.backendAwayUrl.isNotEmpty
+                          ? 'Using the away-from-home address'
+                          : s.backendUrl,
+                      style: TextStyle(
+                          color: cs.onSurfaceVariant, fontSize: 12)),
               trailing: TextButton(
                 onPressed: p.backendLogout,
-                child: const Text('Logout'),
+                child: const Text('Sign out'),
               ),
             ),
 
@@ -3076,7 +3313,7 @@ class _BackendCardState extends State<_BackendCard> {
               }
               return ListTile(
                 leading: const Icon(Icons.security_outlined),
-                title: const Text('Two-Factor Authentication'),
+                title: const Text('Two-step verification'),
                 subtitle: _totp2faFetching
                     ? const Text('Checking status…')
                     : _totpEnabled == null

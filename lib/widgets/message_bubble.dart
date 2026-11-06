@@ -6,6 +6,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:url_launcher/url_launcher.dart';
 import '../models/message.dart';
+import 'friendly.dart';
 import 'color_picker.dart' show onColor;
 
 // ── Segment model ────────────────────────────────────────────────────────────
@@ -195,7 +196,8 @@ class MessageBubble extends StatelessWidget {
               ],
               Flexible(
                 child: GestureDetector(
-                  onLongPress: () => _copyToClipboard(context),
+                  onLongPressStart: (d) =>
+                      _showContextMenu(context, d.globalPosition),
                   onSecondaryTapUp: (d) =>
                       _showContextMenu(context, d.globalPosition),
                   child: Container(
@@ -240,12 +242,16 @@ class MessageBubble extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 _CopyButton(onTap: () => _copyToClipboard(context)),
-                if (onDelete != null && !message.isStreaming) ...[
-                  const SizedBox(width: 10),
+                if (!isUser && onRegenerate != null && !message.isStreaming)
+                  _FooterButton(
+                    icon: Icons.refresh_rounded,
+                    tooltip: 'Try again',
+                    onTap: onRegenerate!,
+                  ),
+                if (onDelete != null && !message.isStreaming)
                   _DeleteButton(
                     onTap: () => _confirmDelete(context, isUser),
                   ),
-                ],
               ],
             ),
           ),
@@ -456,7 +462,7 @@ class MessageBubble extends StatelessWidget {
           value: _MenuAction.regenerate,
           child: ListTile(
             leading: const Icon(Icons.refresh_rounded),
-            title: Text(isUser ? 'Resend' : 'Regenerate'),
+            title: Text(isUser ? 'Send again' : 'Try again'),
             contentPadding: EdgeInsets.zero,
             dense: true,
           ),
@@ -516,6 +522,14 @@ class _AssistantContent extends StatelessWidget {
       return _TypingIndicator(color: theme.colorScheme.onSurfaceVariant);
     }
 
+    // "[Error: …]" messages get a friendly explanation instead of raw text.
+    final inlineError = message.isStreaming
+        ? null
+        : extractInlineError(message.content);
+    if (inlineError != null) {
+      return _InlineErrorView(raw: inlineError);
+    }
+
     final segments = _parseSegments(message.content);
 
     // Determine whether the model is currently inside a think block
@@ -561,6 +575,61 @@ class _AssistantContent extends StatelessWidget {
           const SizedBox(height: 4),
           _TypingIndicator(color: theme.colorScheme.onSurfaceVariant),
         ],
+      ],
+    );
+  }
+}
+
+class _InlineErrorView extends StatefulWidget {
+  final String raw;
+  const _InlineErrorView({required this.raw});
+
+  @override
+  State<_InlineErrorView> createState() => _InlineErrorViewState();
+}
+
+class _InlineErrorViewState extends State<_InlineErrorView> {
+  bool _details = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final fe = friendlyError(widget.raw);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.error_outline_rounded, size: 18, color: cs.error),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(fe.message,
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: cs.onSurface)),
+            ),
+          ],
+        ),
+        TextButton(
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 26),
+          ),
+          onPressed: () => setState(() => _details = !_details),
+          child: Text(_details ? 'Hide details' : 'Show details'),
+        ),
+        if (_details)
+          Padding(
+            padding: const EdgeInsets.only(left: 26),
+            child: SelectableText(
+              widget.raw,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -1128,15 +1197,20 @@ class _CopyButtonState extends State<_CopyButton> {
   @override
   Widget build(BuildContext context) {
     final color = Theme.of(context).colorScheme.onSurfaceVariant;
-    return GestureDetector(
-      onTap: _handleTap,
-      child: AnimatedSwitcher(
+    return IconButton(
+      tooltip: _copied ? 'Copied' : 'Copy',
+      onPressed: _handleTap,
+      visualDensity: VisualDensity.compact,
+      iconSize: 16,
+      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+      padding: EdgeInsets.zero,
+      icon: AnimatedSwitcher(
         duration: const Duration(milliseconds: 200),
         child: _copied
             ? Icon(Icons.check_rounded,
-                key: const ValueKey('check'), size: 14, color: color)
+                key: const ValueKey('check'), size: 16, color: color)
             : Icon(Icons.copy_rounded,
-                key: const ValueKey('copy'), size: 14, color: color),
+                key: const ValueKey('copy'), size: 16, color: color),
       ),
     );
   }
@@ -1149,11 +1223,32 @@ class _DeleteButton extends StatelessWidget {
   const _DeleteButton({required this.onTap});
 
   @override
+  Widget build(BuildContext context) => _FooterButton(
+        icon: Icons.delete_outline_rounded,
+        tooltip: 'Delete',
+        onTap: onTap,
+      );
+}
+
+/// Small icon button under a message, with a tooltip and a finger-sized
+/// tap area.
+class _FooterButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+  const _FooterButton(
+      {required this.icon, required this.tooltip, required this.onTap});
+
+  @override
   Widget build(BuildContext context) {
     final color = Theme.of(context).colorScheme.onSurfaceVariant;
-    return GestureDetector(
-      onTap: onTap,
-      child: Icon(Icons.delete_outline_rounded, size: 14, color: color),
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onTap,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+      padding: EdgeInsets.zero,
+      icon: Icon(icon, size: 16, color: color),
     );
   }
 }

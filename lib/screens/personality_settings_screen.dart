@@ -26,12 +26,44 @@ class PersonalitySettingsScreen extends StatelessWidget {
           final personalities = p.settings.personalities;
           final defaultId = p.settings.defaultPersonalityId;
           if (personalities.isEmpty) {
-            return const Center(child: Text('No personalities yet'));
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'A personality is an assistant with its own name, '
+                      'instructions and tools, for example a cooking helper '
+                      'or a coding assistant.',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: () => _openEditor(context, null),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Create a personality'),
+                    ),
+                  ],
+                ),
+              ),
+            );
           }
           return ListView.builder(
-            itemCount: personalities.length,
+            itemCount: personalities.length + 1,
             itemBuilder: (context, i) {
-              final personality = personalities[i];
+              if (i == 0) {
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  child: Text(
+                    'Pick a personality when you start a new chat. '
+                    'The one with a star is used by default.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  ),
+                );
+              }
+              final personality = personalities[i - 1];
               final isDefault = personality.id == defaultId;
               return ListTile(
                 leading: CircleAvatar(
@@ -50,22 +82,32 @@ class PersonalitySettingsScreen extends StatelessWidget {
                 ),
                 title: Text(personality.name),
                 subtitle: Text(
-                  personality.systemPrompt,
+                  personality.systemPrompt.trim().isEmpty
+                      ? 'No instructions'
+                      : personality.systemPrompt,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
+                onTap: () => _openEditor(context, personality),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (isDefault)
-                      Tooltip(
-                        message: 'Default for new chats',
-                        child: Icon(
-                          Icons.star_rounded,
-                          color: Theme.of(context).colorScheme.primary,
-                          size: 18,
-                        ),
+                    IconButton(
+                      tooltip: isDefault
+                          ? 'Default for new chats'
+                          : 'Make default for new chats',
+                      icon: Icon(
+                        isDefault
+                            ? Icons.star_rounded
+                            : Icons.star_outline_rounded,
+                        color: isDefault
+                            ? Theme.of(context).colorScheme.primary
+                            : null,
                       ),
+                      onPressed: isDefault
+                          ? null
+                          : () => p.setDefaultPersonality(personality.id),
+                    ),
                     IconButton(
                       icon: const Icon(Icons.edit_outlined),
                       tooltip: 'Edit',
@@ -247,7 +289,13 @@ class _PersonalityEditScreenState extends State<_PersonalityEditScreen> {
           TextField(
             controller: _promptCtrl,
             decoration: const InputDecoration(
-              labelText: 'System prompt',
+              labelText: 'Instructions',
+              hintText: 'Describe how this assistant should behave, e.g. '
+                  '"You are a friendly cooking helper. Keep answers short."',
+              helperText:
+                  'The AI reads this before every chat with this personality',
+              helperMaxLines: 2,
+              hintMaxLines: 3,
               border: OutlineInputBorder(),
               alignLabelWithHint: true,
             ),
@@ -270,14 +318,13 @@ class _PersonalityEditScreenState extends State<_PersonalityEditScreen> {
 
           // ── MCP servers ──────────────────────────────────────────────────
           Text(
-            'MCP Servers',
+            'Tools this personality can use',
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 4),
           Text(
-            'Select which globally-configured servers are active for this '
-            'personality. The built-in file MCP (folder picker) is always '
-            'available regardless.',
+            'Only the ticked tools are offered to the AI in chats with this '
+            'personality. Folder access is always available.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
@@ -287,7 +334,7 @@ class _PersonalityEditScreenState extends State<_PersonalityEditScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Text(
-                'No MCP servers configured. Add them in Settings → MCP Servers.',
+                'No tools set up yet. You can add them in Settings → Tools.',
                 style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
@@ -297,11 +344,6 @@ class _PersonalityEditScreenState extends State<_PersonalityEditScreen> {
               final checked = _activeMcpIds.contains(server.id);
               return CheckboxListTile(
                 title: Text(server.name),
-                subtitle: Text(
-                  server.baseUrlHome,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
                 value: checked,
                 onChanged: (v) {
                   setState(() {
