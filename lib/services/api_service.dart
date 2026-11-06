@@ -46,11 +46,12 @@ class ApiService {
     bool toolsEnabled = false,
   }) {
     final messages = <Map<String, dynamic>>[];
-    // Build system prompt, optionally appending current date/time.
+    // Build system prompt with today's date. Date only (no time): a value
+    // that changes every minute here would invalidate the server's prompt
+    // cache on every request.
     final systemBase = settings.systemPrompt;
-    final dateTimeSuffix = settings.injectDateTime
-        ? '\n\nCurrent date and time: ${DateFormat("EEEE, d MMMM yyyy, HH:mm").format(DateTime.now())}'
-        : '';
+    final dateTimeSuffix =
+        '\n\nToday is ${DateFormat("EEEE, d MMMM yyyy").format(DateTime.now())}.';
     final systemContent = '$systemBase$dateTimeSuffix'.trim();
     if (systemContent.isNotEmpty) {
       messages.add({'role': 'system', 'content': systemContent});

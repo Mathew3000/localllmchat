@@ -210,17 +210,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   isSelected: (v) => v == _maxTokens,
                   onSelected: (v) => _changed(() => _maxTokens = v),
                 ),
-                const Divider(height: 1),
-                SwitchListTile(
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  secondary: const Icon(Icons.calendar_today_outlined),
-                  title: const Text("Tell the AI today's date"),
-                  subtitle: const Text('Helps with questions like "what day is it?"'),
-                  value: s.injectDateTime,
-                  onChanged: (v) =>
-                      provider.updateSettings(s.copyWith(injectDateTime: v)),
-                ),
               ]),
               const SizedBox(height: 12),
               const _PersonalitiesNavTile(),

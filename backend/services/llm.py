@@ -17,9 +17,11 @@ result so the device receives the completed message on next load.
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,10 +36,29 @@ logger = logging.getLogger(__name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _dt_string() -> str:
+def _dt_string(dt: datetime | None = None) -> str:
     """Human-readable datetime without platform-specific format codes."""
-    now = datetime.now()
+    now = dt or datetime.now()
     return f"{now.strftime('%A')}, {now.day} {now.strftime('%B %Y, %H:%M')}"
+
+
+def _local_tz() -> ZoneInfo:
+    try:
+        return ZoneInfo(os.environ.get("TZ") or "UTC")
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def _msg_timestamp(created_at: datetime) -> str:
+    """Send time of a stored message in local time, e.g. "[Friday, 6 November 2026, 14:39]".
+
+    Derived from the stored created_at so it never changes between requests,
+    which keeps the server-side prompt cache valid (a per-request timestamp in
+    the system prompt invalidates the whole cache every minute).
+    """
+    if created_at.tzinfo is None:  # SQLite returns naive UTC datetimes
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return f"[{_dt_string(created_at.astimezone(_local_tz()))}]"
 
 
 def _strip_thinking(text: str) -> str:
@@ -79,9 +100,14 @@ def _build_messages(
         if system_prompt_override is not None
         else settings.get("systemPrompt", "")
     )
-    if settings.get("injectDateTime"):
-        dt_str = client_datetime if client_datetime else _dt_string()
-        system_prompt += f"\n\nCurrent date and time: {dt_str}"
+    # Always on (the "injectDateTime" setting was removed). Static text only:
+    # the actual times are stamped on each user message so the prompt prefix
+    # stays cacheable. client_datetime is unused; kept for API compatibility.
+    inject_dt = True
+    system_prompt += (
+        "\n\nEach user message starts with the local date and time it was "
+        "sent, in square brackets. The newest one is the current time."
+    )
     if memory_context:
         system_prompt += (
             "\n\n---\n**About the user (from memory):**\n"
@@ -123,8 +149,11 @@ def _build_messages(
                 {"type": "image_url", "image_url": {"url": img}}
                 for img in msg.images
             ]
-            if msg.content:
-                content.append({"type": "text", "text": msg.content})
+            text = msg.content or ""
+            if inject_dt:
+                text = f"{_msg_timestamp(msg.created_at)} {text}".rstrip()
+            if text:
+                content.append({"type": "text", "text": text})
             m["content"] = content
         elif msg.role == "assistant":
             # Strip or preserve thinking tokens based on the setting.
@@ -140,6 +169,8 @@ def _build_messages(
             # Drop assistant messages that are empty after processing.
             if not m.get("content") and not m.get("reasoning_content"):
                 continue
+        elif msg.role == "user" and inject_dt:
+            m["content"] = f"{_msg_timestamp(msg.created_at)} {msg.content or ''}".rstrip()
         else:
             m["content"] = msg.content
 
