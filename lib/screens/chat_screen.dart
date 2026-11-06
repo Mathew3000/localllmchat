@@ -642,18 +642,22 @@ class _EmptyState extends StatelessWidget {
                       ),
                     const SizedBox(height: 24),
                     // ── Suggestions ────────────────────────────────────
-                    Wrap(
-                      alignment: WrapAlignment.center,
-                      spacing: 10,
-                      runSpacing: 10,
-                      children: [
-                        for (final s in _suggestions)
-                          _SuggestionCard(
-                            icon: s.$1,
-                            label: s.$2,
-                            onTap: () => p.sendMessage(s.$3),
-                          ),
-                      ],
+                    // Max width fits two cards per row → a tidy 2×2 grid.
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 320),
+                      child: Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          for (final s in _suggestions)
+                            _SuggestionCard(
+                              icon: s.$1,
+                              label: s.$2,
+                              onTap: () => p.sendMessage(s.$3),
+                            ),
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 16),
                     Text(
