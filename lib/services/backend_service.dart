@@ -360,8 +360,16 @@ class BackendService {
 
   // ── WebSocket lifecycle ───────────────────────────────────────────────────
 
-  Future<void> connect() async {
-    if (_channel != null) return;
+  Future<void>? _connecting;
+
+  Future<void> connect() {
+    if (_channel != null) return Future.value();
+    // Share an in-flight attempt: overlapping callers (e.g. app start and app
+    // resume) would otherwise open a second socket and every event arrives twice.
+    return _connecting ??= _connect().whenComplete(() => _connecting = null);
+  }
+
+  Future<void> _connect() async {
     try {
       final IOWebSocketChannel ch;
       if (allowSelfSigned) {
