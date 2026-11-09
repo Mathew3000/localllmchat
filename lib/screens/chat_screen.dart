@@ -40,15 +40,49 @@ class _ChatScreenState extends State<ChatScreen> {
       final p = context.read<AppProvider>();
       _lastActiveConvId = p.activeConversation?.id;
       p.addListener(_onProviderChanged);
+      _pendingJump = true;
+      _onProviderChanged();
     });
   }
 
+  /// Set when a chat was opened; cleared once the list has reached its end.
+  /// Messages may arrive later than the switch (backend loads them lazily),
+  /// so the jump waits until there is something to show.
+  bool _pendingJump = false;
+  bool _jumpScheduled = false;
+
   void _onProviderChanged() {
-    final convId = context.read<AppProvider>().activeConversation?.id;
-    if (convId != null && convId != _lastActiveConvId) {
-      _lastActiveConvId = convId;
-      _scrollToBottom(animated: false);
+    final conv = context.read<AppProvider>().activeConversation;
+    if (conv != null && conv.id != _lastActiveConvId) {
+      _lastActiveConvId = conv.id;
+      _pendingJump = true;
     }
+    if (_pendingJump && conv != null && conv.messages.isNotEmpty) {
+      _jumpToEnd();
+    }
+  }
+
+  /// Jumps to the bottom over a few frames: the list only measures messages
+  /// as they are built, so the first jump can stop short of the real end.
+  void _jumpToEnd([int tries = 0]) {
+    if (_jumpScheduled && tries == 0) return;
+    _jumpScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _jumpScheduled = false;
+      if (!mounted || !_scrollController.hasClients) return;
+      final pos = _scrollController.position;
+      if (pos.pixels >= pos.maxScrollExtent - 1 && tries > 0) {
+        _pendingJump = false;
+        return;
+      }
+      _scrollController.jumpTo(pos.maxScrollExtent);
+      if (tries < 10) {
+        _jumpToEnd(tries + 1);
+      } else {
+        _pendingJump = false;
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   @override
