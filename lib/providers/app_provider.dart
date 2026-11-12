@@ -1974,6 +1974,15 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           (_pendingTokens[cid] ??= StringBuffer()).write(text);
         }
 
+      case BEPromptProgress(
+            conversationId: final cid,
+            progress: final progress,
+          ):
+        if (cid == _streamingBackendConvId && _streamingBackendMsg != null) {
+          _streamingBackendMsg!.promptProgress = progress;
+          notifyListeners();
+        }
+
       case BEMessageComplete(
           conversationId: final cid,
           promptTokens: final pt,
@@ -2265,6 +2274,10 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           conv.lastPromptTokens = prompt;
           _persistConversations();
         },
+        onProgress: (progress) {
+          assistantMsg.promptProgress = progress;
+          notifyListeners();
+        },
       ).listen(
         (chunk) {
           assistantMsg.content += chunk;
@@ -2339,10 +2352,15 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         // the message list, no notifyListeners() needed.
 
         LlmResponse? response;
+        final progressTarget = activeMsg;
         await for (final chunk in api.streamChatWithTools(
           history,
           activeMcpTools,
           (r) => response = r,
+          onProgress: (progress) {
+            progressTarget.promptProgress = progress;
+            notifyListeners();
+          },
         )) {
           activeMsg.content += chunk;
           notifyListeners();

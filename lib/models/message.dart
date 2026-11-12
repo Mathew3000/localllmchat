@@ -3,11 +3,64 @@ import 'tool_call.dart';
 
 enum Role { user, assistant, system, tool }
 
+/// Prompt-ingestion progress reported by llama.cpp (`return_progress: true`).
+///
+/// [processed] includes the [cache]d tokens, so the work actually being done
+/// is `processed - cache` out of `total - cache`. [timeMs] counts from the
+/// start of prompt processing.
+class PromptProgress {
+  final int total;
+  final int cache;
+  final int processed;
+  final int timeMs;
+
+  const PromptProgress({
+    required this.total,
+    required this.cache,
+    required this.processed,
+    required this.timeMs,
+  });
+
+  /// Parses a `prompt_progress` object; null when it is missing or malformed.
+  static PromptProgress? tryParse(Object? raw) {
+    if (raw is! Map) return null;
+    final total = (raw['total'] as num?)?.toInt();
+    if (total == null || total <= 0) return null;
+    return PromptProgress(
+      total: total,
+      cache: (raw['cache'] as num?)?.toInt() ?? 0,
+      processed: (raw['processed'] as num?)?.toInt() ?? 0,
+      timeMs: (raw['time_ms'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  int get toProcess => total - cache;
+  int get done => (processed - cache).clamp(0, toProcess);
+
+  /// 0..1 over the uncached part of the prompt.
+  double get fraction => toProcess <= 0 ? 1.0 : done / toProcess;
+
+  /// Remaining time extrapolated from the rate so far; null until there is
+  /// enough signal to estimate.
+  Duration? get eta {
+    if (done <= 0 || timeMs <= 0 || done >= toProcess) return null;
+    final msPerToken = timeMs / done;
+    return Duration(milliseconds: ((toProcess - done) * msPerToken).round());
+  }
+
+  double? get tokensPerSecond =>
+      (done > 0 && timeMs > 0) ? done * 1000 / timeMs : null;
+}
+
 class Message {
   final String id;
   final Role role;
   String content;
   bool isStreaming;
+
+  /// Live prompt-ingestion progress while waiting for the first token.
+  /// Transient UI state — never serialised.
+  PromptProgress? promptProgress;
 
   // ── Tool-call fields (role == assistant, LLM chose to call tools) ─────────
   final List<ToolCall>? toolCalls;

@@ -517,8 +517,15 @@ class _AssistantContent extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    // Empty bubble before any token arrives
+    // Empty bubble before any token arrives: show prompt-ingestion progress
+    // for long uncached prompts, otherwise the typing dots.
     if (message.content.isEmpty && message.isStreaming) {
+      final progress = message.promptProgress;
+      if (progress != null &&
+          progress.toProcess >= _PromptProgressView.minTokens &&
+          progress.fraction < 1.0) {
+        return _PromptProgressView(progress: progress);
+      }
       return _TypingIndicator(color: theme.colorScheme.onSurfaceVariant);
     }
 
@@ -1105,6 +1112,62 @@ class _ThinkingBlockState extends State<_ThinkingBlock>
               : const SizedBox.shrink(),
         ),
       ],
+    );
+  }
+}
+
+// ── Prompt-ingestion progress ─────────────────────────────────────────────────
+
+class _PromptProgressView extends StatelessWidget {
+  /// Below this many uncached tokens ingestion is too quick to be worth a bar.
+  static const minTokens = 512;
+
+  final PromptProgress progress;
+  const _PromptProgressView({required this.progress});
+
+  static String _tokens(int n) =>
+      n >= 1000 ? '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}k' : '$n';
+
+  static String _eta(Duration d) {
+    final s = d.inSeconds;
+    if (s < 60) return '~${s < 1 ? 1 : s} s left';
+    return '~${(s / 60).ceil()} min left';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+    final pct = (progress.fraction * 100).floor();
+    final eta = progress.eta;
+    final details = [
+      '${_tokens(progress.done)} / ${_tokens(progress.toProcess)} tokens',
+      if (progress.cache > 0) '${_tokens(progress.cache)} cached',
+      if (eta != null) _eta(eta),
+    ].join(' · ');
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 320),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Reading the conversation… $pct%',
+              style: theme.textTheme.bodyMedium?.copyWith(color: muted)),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: progress.fraction,
+              minHeight: 6,
+              backgroundColor: muted.withValues(alpha: 0.15),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(details,
+              style: theme.textTheme.bodySmall?.copyWith(color: muted)),
+        ],
+      ),
     );
   }
 }

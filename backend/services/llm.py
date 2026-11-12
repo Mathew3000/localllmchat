@@ -42,6 +42,11 @@ def _dt_string(dt: datetime | None = None) -> str:
     return f"{now.strftime('%A')}, {now.day} {now.strftime('%B %Y, %H:%M')}"
 
 
+# conversation_id -> memory block used in its system prompt (insertion-ordered, oldest evicted first)
+_memory_cache: dict[str, str | None] = {}
+_MEMORY_CACHE_MAX = 500
+
+
 def _local_tz() -> ZoneInfo:
     try:
         return ZoneInfo(os.environ.get("TZ") or "UTC")
@@ -270,10 +275,22 @@ async def run_generation(
             tools, mcp_tool_clients = await load_tools_from_settings(
                 settings, allowed_server_ids=allowed_ids
             )
-            if not memory_context:
+            if not memory_context and conversation_id in _memory_cache:
+                memory_context = _memory_cache[conversation_id]
+            elif not memory_context:
                 memory_context = await fetch_memory_context(
                     settings, allowed_server_ids=allowed_ids
                 )
+
+        # Freeze the memory block per conversation: it sits in the system
+        # prompt, so any change would invalidate the whole prompt cache.
+        # Memories saved mid-conversation are already in the chat history.
+        if conversation_id in _memory_cache:
+            memory_context = _memory_cache[conversation_id]
+        elif memory_context:  # don't freeze a failed/empty fetch
+            _memory_cache[conversation_id] = memory_context
+            while len(_memory_cache) > _MEMORY_CACHE_MAX:
+                _memory_cache.pop(next(iter(_memory_cache)))
 
         if tools:
             logger.info(
@@ -330,6 +347,8 @@ async def run_generation(
                 ),
                 "stream": True,
                 "stream_options": {"include_usage": True},
+                # llama.cpp: stream prompt-ingestion progress (ignored elsewhere).
+                "return_progress": True,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }
@@ -379,6 +398,17 @@ async def run_generation(
                                 # Capture usage when present (may be in a chunk with empty choices).
                                 if chunk.get("usage"):
                                     usage_data = chunk["usage"]
+                                progress = chunk.get("prompt_progress")
+                                if isinstance(progress, dict):
+                                    await _send({
+                                        "type": "prompt_progress",
+                                        "conversation_id": conversation_id,
+                                        "message_id": assistant_msg.id,
+                                        "total": progress.get("total"),
+                                        "cache": progress.get("cache"),
+                                        "processed": progress.get("processed"),
+                                        "time_ms": progress.get("time_ms"),
+                                    })
                                 choices = chunk.get("choices", [])
                                 if not choices:
                                     continue
