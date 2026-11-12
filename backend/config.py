@@ -15,15 +15,10 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:////data/db.sqlite"
     registration_enabled: bool = True
 
-    # In-app updates: where GitLab CI publishes the Android build.
-    # Leave update_gitlab_url empty to turn updates off.
-    update_gitlab_url: str = ""            # e.g. https://git.hacksaar.de
-    update_project: str = ""               # e.g. Mathew3000/localllmchat
-    update_ref: str = "master"
-    update_job: str = "build:apk"
-    update_gitlab_token: str = ""          # only needed for non-public projects
-    update_basic_user: str = ""            # htaccess login in front of GitLab
-    update_basic_password: str = ""
+    # In-app updates: the GitHub repo whose releases hold the Android APK.
+    # Leave update_github_repo empty to turn updates off.
+    update_github_repo: str = ""           # e.g. Mathew3000/localllmchat
+    update_github_token: str = ""          # read-only token; needed for private repos
     update_cache_dir: str = "/data/updates"
 
     def validate_secret_key(self) -> None:
