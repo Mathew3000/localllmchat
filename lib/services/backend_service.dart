@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show HttpClient, WebSocket;
+import 'dart:io' show File, HttpClient, WebSocket;
 
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
@@ -539,6 +539,52 @@ class BackendService {
 
   void cancelGeneration(String conversationId) {
     _send({'type': 'cancel', 'conversation_id': conversationId});
+  }
+
+  // ── REST: App updates ─────────────────────────────────────────────────────
+
+  /// Newest Android build the server can hand out, or null if updates are
+  /// not set up on the server.
+  Future<Map<String, dynamic>?> fetchAndroidUpdateInfo() async {
+    final resp = await _httpClient()
+        .get(Uri.parse('$_base/api/app/update/android'), headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    if (resp.statusCode == 404) return null; // older server without updates
+    _check(resp);
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    return body['available'] == true ? body : null;
+  }
+
+  /// Downloads the newest APK into [target]. [onProgress] gets 0..1, or null
+  /// while the size is unknown (the server may still be fetching it).
+  Future<void> downloadAndroidUpdate(
+    File target, {
+    void Function(double? progress)? onProgress,
+  }) async {
+    final req =
+        http.Request('GET', Uri.parse('$_base/api/app/update/android/apk'))
+          ..headers.addAll(_headers);
+    final resp =
+        await _httpClient().send(req).timeout(const Duration(minutes: 5));
+    if (resp.statusCode >= 400) {
+      _check(await http.Response.fromStream(resp));
+    }
+    final total = resp.contentLength;
+    var received = 0;
+    final sink = target.openWrite();
+    try {
+      await for (final chunk
+          in resp.stream.timeout(const Duration(minutes: 2))) {
+        sink.add(chunk);
+        received += chunk.length;
+        onProgress?.call(total != null && total > 0 ? received / total : null);
+      }
+    } finally {
+      await sink.close();
+    }
+    if (total != null && received != total) {
+      throw Exception('Download incomplete ($received of $total bytes)');
+    }
   }
 
   // ── REST: Conversations ───────────────────────────────────────────────────

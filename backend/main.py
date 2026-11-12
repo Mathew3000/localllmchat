@@ -10,7 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from config import settings
 from database import init_db
 from limiter import limiter
-from routers import auth, conversations, models_router, settings as settings_router, ws
+from routers import app_update, auth, conversations, models_router, settings as settings_router, ws
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,7 @@ app.include_router(conversations.router)
 app.include_router(settings_router.router)
 app.include_router(models_router.router)
 app.include_router(ws.router)
+app.include_router(app_update.router)
 
 
 @app.get("/health", tags=["health"])
