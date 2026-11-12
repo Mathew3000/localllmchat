@@ -40,15 +40,49 @@ class _ChatScreenState extends State<ChatScreen> {
       final p = context.read<AppProvider>();
       _lastActiveConvId = p.activeConversation?.id;
       p.addListener(_onProviderChanged);
+      _pendingJump = true;
+      _onProviderChanged();
     });
   }
 
+  /// Set when a chat was opened; cleared once the list has reached its end.
+  /// Messages may arrive later than the switch (backend loads them lazily),
+  /// so the jump waits until there is something to show.
+  bool _pendingJump = false;
+  bool _jumpScheduled = false;
+
   void _onProviderChanged() {
-    final convId = context.read<AppProvider>().activeConversation?.id;
-    if (convId != null && convId != _lastActiveConvId) {
-      _lastActiveConvId = convId;
-      _scrollToBottom(animated: false);
+    final conv = context.read<AppProvider>().activeConversation;
+    if (conv != null && conv.id != _lastActiveConvId) {
+      _lastActiveConvId = conv.id;
+      _pendingJump = true;
     }
+    if (_pendingJump && conv != null && conv.messages.isNotEmpty) {
+      _jumpToEnd();
+    }
+  }
+
+  /// Jumps to the bottom over a few frames: the list only measures messages
+  /// as they are built, so the first jump can stop short of the real end.
+  void _jumpToEnd([int tries = 0]) {
+    if (_jumpScheduled && tries == 0) return;
+    _jumpScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _jumpScheduled = false;
+      if (!mounted || !_scrollController.hasClients) return;
+      final pos = _scrollController.position;
+      if (pos.pixels >= pos.maxScrollExtent - 1 && tries > 0) {
+        _pendingJump = false;
+        return;
+      }
+      _scrollController.jumpTo(pos.maxScrollExtent);
+      if (tries < 10) {
+        _jumpToEnd(tries + 1);
+      } else {
+        _pendingJump = false;
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   @override
@@ -191,6 +225,11 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildChatPanel(AppProvider p, Color? bgColor) {
     return Column(
       children: [
+        Consumer<AppProvider>(
+          builder: (_, p, __) => p.showUpdateBanner
+              ? const _UpdateBanner()
+              : const SizedBox.shrink(),
+        ),
         Expanded(
           child: _MessageList(scrollController: _scrollController),
         ),
@@ -797,6 +836,84 @@ void showPersonalityPicker(BuildContext context, AppProvider p) {
       ),
     ),
   );
+}
+
+/// "A new version is ready" strip shown above the chat.
+class _UpdateBanner extends StatelessWidget {
+  const _UpdateBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.watch<AppProvider>();
+    final cs = Theme.of(context).colorScheme;
+    final update = p.availableUpdate!;
+    final busy = p.updateBusy;
+    return Material(
+      color: cs.primaryContainer,
+      child: SafeArea(
+        bottom: false,
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.system_update_rounded,
+                      color: cs.onPrimaryContainer),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      busy
+                          ? 'Downloading the new version…'
+                          : 'A new version of LoomChat is ready',
+                      style: TextStyle(
+                          color: cs.onPrimaryContainer,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  if (!busy) ...[
+                    TextButton(
+                      onPressed: p.dismissUpdate,
+                      child: const Text('Later'),
+                    ),
+                    FilledButton(
+                      onPressed: p.installUpdate,
+                      child: const Text('Update'),
+                    ),
+                  ],
+                ],
+              ),
+              if (busy)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8, right: 8),
+                  child: LinearProgressIndicator(value: p.updateProgress),
+                )
+              else if (p.updateMessage != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4, left: 36),
+                  child: Text(p.updateMessage!,
+                      style: TextStyle(color: cs.onPrimaryContainer)),
+                )
+              else if (update.notes.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2, left: 36),
+                  child: Text(
+                    'Latest change: ${update.notes}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: cs.onPrimaryContainer.withValues(alpha: 0.8)),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _ErrorBanner extends StatefulWidget {

@@ -23,6 +23,7 @@ import '../services/storage_service.dart';
 import '../services/streaming_keep_alive.dart';
 import '../services/sync_service.dart';
 import '../services/debug_logger.dart';
+import '../services/update_service.dart';
 
 // ── Queued-message data class ─────────────────────────────────────────────────
 
@@ -164,6 +165,106 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Backend getters
   bool get backendConnecting => _backendConnecting;
+
+  // ── In-app updates (Android + LoomChat server) ──────────────────────────
+  AppUpdate? _availableUpdate;
+  bool _updateDismissed = false;
+  bool _updateBusy = false;
+  double? _updateProgress;
+  String? _updateMessage;
+  DateTime? _lastUpdateCheck;
+
+  /// A newer build than the installed one, if the server has one.
+  AppUpdate? get availableUpdate => _availableUpdate;
+
+  /// True when the update banner should show in the chat.
+  bool get showUpdateBanner =>
+      _availableUpdate != null && (!_updateDismissed || _updateBusy);
+  bool get updateBusy => _updateBusy;
+
+  /// Download progress 0..1, or null while unknown.
+  double? get updateProgress => _updateProgress;
+
+  /// Plain-language status or problem from the last update action.
+  String? get updateMessage => _updateMessage;
+  bool get canCheckForUpdates =>
+      UpdateService.supported && _settings.useBackend && _backend != null;
+
+  void dismissUpdate() {
+    _updateDismissed = true;
+    notifyListeners();
+  }
+
+  /// Asks the server for a newer build. Automatic checks run at most every
+  /// 6 hours; [manual] checks always run. Returns true if one was found.
+  Future<bool> checkForUpdate({bool manual = false}) async {
+    if (!canCheckForUpdates) return false;
+    final now = DateTime.now();
+    if (!manual &&
+        _lastUpdateCheck != null &&
+        now.difference(_lastUpdateCheck!) < const Duration(hours: 6)) {
+      return _availableUpdate != null;
+    }
+    _lastUpdateCheck = now;
+    try {
+      final info = await _backend!.fetchAndroidUpdateInfo();
+      final current = await UpdateService.currentBuild();
+      final build = (info?['build'] as num?)?.toInt() ?? 0;
+      if (info != null && build > current) {
+        _availableUpdate = AppUpdate(
+          version: info['version'] as String? ?? '',
+          build: build,
+          notes: info['notes'] as String? ?? '',
+        );
+        if (manual) _updateDismissed = false;
+        _updateMessage = null;
+      } else {
+        _availableUpdate = null;
+        if (manual) _updateMessage = 'You have the newest version.';
+      }
+    } catch (e) {
+      if (manual) _updateMessage = "Couldn't check for updates right now.";
+      DebugLogger.instance.logError('update', 'check', e);
+    }
+    notifyListeners();
+    return _availableUpdate != null;
+  }
+
+  /// Downloads the update through the LoomChat server and opens the
+  /// Android installer.
+  Future<void> installUpdate() async {
+    if (_updateBusy || _availableUpdate == null || _backend == null) return;
+    _updateBusy = true;
+    _updateProgress = null;
+    _updateMessage = 'Downloading the update…';
+    notifyListeners();
+    try {
+      final file = await UpdateService.apkFile();
+      var lastNotify = DateTime.now();
+      await _backend!.downloadAndroidUpdate(file, onProgress: (p) {
+        _updateProgress = p;
+        final t = DateTime.now();
+        if (t.difference(lastNotify).inMilliseconds > 150) {
+          lastNotify = t;
+          notifyListeners();
+        }
+      });
+      _updateProgress = 1;
+      final started = await UpdateService.install(file);
+      _updateMessage = started
+          ? null
+          : 'Allow LoomChat to install apps in the screen that just opened, '
+              'then tap Update again.';
+    } catch (e) {
+      _updateMessage =
+          "The update couldn't be downloaded. Please try again later.";
+      DebugLogger.instance.logError('update', 'download', e);
+    } finally {
+      _updateBusy = false;
+      notifyListeners();
+    }
+  }
+
   String? get backendConnectError => _backendConnectError;
   bool get backendConnected => _backend?.isConnected ?? false;
   bool get backendUsingAway => _backendUsingAway;
@@ -1257,6 +1358,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       // and must be reached by the client — fetch their tools now so they can
       // be relayed through the WebSocket during generation.
       _fetchAllMcpTools(localOnlyOnly: true);
+      // Look for a newer app version in the background.
+      unawaited(checkForUpdate());
 
       // Schedule the proactive token-renewal timer now that we are fully
       // connected.  The timer fires ~10 min before the 7-day access token

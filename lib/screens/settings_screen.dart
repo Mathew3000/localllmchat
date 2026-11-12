@@ -14,7 +14,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../models/settings.dart';
 import '../providers/app_provider.dart';
-import '../version.dart';
+import '../services/update_service.dart';
 import '../widgets/color_picker.dart';
 import '../widgets/friendly.dart';
 import 'mcp_servers_screen.dart';
@@ -299,10 +299,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 subtitle: 'Record a log file to help find problems',
                 children: [_DebugCard()],
               ),
+              const SizedBox(height: 8),
+              const _AppVersionCard(),
               const SizedBox(height: 32),
               Center(
                 child: Text(
-                  'LoomChat $kAppVersion · changes are saved automatically',
+                  'Changes are saved automatically',
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: Theme.of(context)
                             .colorScheme
@@ -3338,6 +3340,81 @@ class _BackendCardState extends State<_BackendCard> {
           ],
         ]);
       },
+    );
+  }
+}
+
+/// Shows the installed version and, on Android with a LoomChat server,
+/// lets the user check for and install updates.
+class _AppVersionCard extends StatelessWidget {
+  const _AppVersionCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.watch<AppProvider>();
+    final update = p.availableUpdate;
+    final cs = Theme.of(context).colorScheme;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.info_outline_rounded, color: cs.onSurfaceVariant),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: FutureBuilder<String>(
+                    future: UpdateService.currentLabel(),
+                    builder: (_, snap) => Text(
+                      'LoomChat ${snap.data ?? ''}',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                  ),
+                ),
+                if (p.canCheckForUpdates)
+                  p.updateBusy
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2)),
+                        )
+                      : update != null
+                          ? FilledButton(
+                              onPressed: p.installUpdate,
+                              child: const Text('Update'),
+                            )
+                          : TextButton(
+                              onPressed: () => p.checkForUpdate(manual: true),
+                              child: const Text('Check for updates'),
+                            ),
+              ],
+            ),
+            if (update != null && !p.updateBusy)
+              Padding(
+                padding: const EdgeInsets.only(left: 40, top: 4),
+                child: Text('Version ${update.label} is available.'),
+              ),
+            if (p.updateBusy)
+              Padding(
+                padding: const EdgeInsets.only(left: 40, top: 8, right: 8),
+                child: LinearProgressIndicator(value: p.updateProgress),
+              )
+            else if (p.updateMessage != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 40, top: 4),
+                child: Text(
+                  p.updateMessage!,
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
