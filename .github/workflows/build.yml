@@ -1,8 +1,9 @@
-name: Android
+name: Build
 
-# Every push to master builds a signed APK and publishes it as a GitHub
-# Release. The LoomChat server reads the latest release and offers it to the
-# app as an update. Pull requests are only analyzed.
+# Every push to master builds a signed Android APK and a Windows zip and
+# publishes both as a GitHub Release. The LoomChat server reads the latest
+# release and offers the APK to the app as an update. Pull requests are only
+# analyzed.
 
 on:
   push:
@@ -14,7 +15,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: android-${{ github.ref }}
+  group: build-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -24,8 +25,11 @@ env:
   KEEP_RELEASES: 10
 
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,7 +60,6 @@ jobs:
           VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION-build.$BUILD" >> "$GITHUB_OUTPUT"
           echo "Building $VERSION+$BUILD"
 
       # In-app updates only install when every APK is signed with the same
@@ -90,21 +93,80 @@ jobs:
           cp build/app/outputs/flutter-apk/app-release.apk \
             "LoomChat-${{ steps.version.outputs.version }}-build.${{ steps.version.outputs.build }}.apk"
 
-      - name: Publish release
+      - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
+        with:
+          name: android
+          path: LoomChat-*.apk
+          retention-days: 3
+
+  windows:
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Build
+        shell: bash
+        run: |
+          BUILD=$(git rev-list --count HEAD)
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
+          echo "NAME=LoomChat-$VERSION-build.$BUILD-windows" >> "$GITHUB_ENV"
+          flutter pub get
+          flutter build windows --release --build-name="$VERSION" --build-number="$BUILD"
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath "$env:NAME.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: LoomChat-*-windows.zip
+          retention-days: 3
+
+  release:
+    needs: [android, windows]
+    # Publish the Android update even if only the Windows build failed.
+    if: >-
+      always() && github.event_name != 'pull_request' &&
+      needs.android.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ needs.android.outputs.version }}
+          BUILD: ${{ needs.android.outputs.build }}
         run: |
+          ls -la dist
           git log -1 --format=%B > notes.txt
-          gh release create "$TAG" LoomChat-*.apk \
+          if [ "${{ needs.windows.result }}" != "success" ]; then
+            printf '\n_Windows build failed for this release._\n' >> notes.txt
+          fi
+          gh release create "v$VERSION-build.$BUILD" dist/* \
             --target "$GITHUB_SHA" \
-            --title "LoomChat ${{ steps.version.outputs.version }} (build ${{ steps.version.outputs.build }})" \
+            --title "LoomChat $VERSION (build $BUILD)" \
             --notes-file notes.txt \
             --latest
 
       - name: Delete old releases
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
