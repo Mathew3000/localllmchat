@@ -347,6 +347,8 @@ async def run_generation(
                 ),
                 "stream": True,
                 "stream_options": {"include_usage": True},
+                # llama.cpp: stream prompt-ingestion progress (ignored elsewhere).
+                "return_progress": True,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }
@@ -396,6 +398,17 @@ async def run_generation(
                                 # Capture usage when present (may be in a chunk with empty choices).
                                 if chunk.get("usage"):
                                     usage_data = chunk["usage"]
+                                progress = chunk.get("prompt_progress")
+                                if isinstance(progress, dict):
+                                    await _send({
+                                        "type": "prompt_progress",
+                                        "conversation_id": conversation_id,
+                                        "message_id": assistant_msg.id,
+                                        "total": progress.get("total"),
+                                        "cache": progress.get("cache"),
+                                        "processed": progress.get("processed"),
+                                        "time_ms": progress.get("time_ms"),
+                                    })
                                 choices = chunk.get("choices", [])
                                 if not choices:
                                     continue

@@ -203,6 +203,7 @@ class ApiService {
   Stream<String> streamChat(
     List<Message> history, {
     void Function(int prompt, int completion)? onUsage,
+    void Function(PromptProgress)? onProgress,
   }) async* {
     final endpoint = '$_baseUrl/chat/completions';
     final resp = await _openStream(jsonEncode({
@@ -211,6 +212,8 @@ class ApiService {
       'stream': true,
       'temperature': settings.temperature,
       'max_tokens': settings.maxTokens,
+      // llama.cpp: stream prompt-ingestion progress. Ignored elsewhere.
+      'return_progress': true,
     }));
 
     bool inThinking = false;
@@ -227,6 +230,9 @@ class ApiService {
         if (data == '[DONE]') break;
         try {
           final json = jsonDecode(data) as Map<String, dynamic>;
+
+          final progress = PromptProgress.tryParse(json['prompt_progress']);
+          if (progress != null) onProgress?.call(progress);
 
           // Capture usage when present (may appear in a chunk with empty choices).
           final usage = json['usage'] as Map<String, dynamic>?;
@@ -282,8 +288,9 @@ class ApiService {
   Stream<String> streamChatWithTools(
     List<Message> history,
     List<McpToolDef> tools,
-    void Function(LlmResponse) onComplete,
-  ) async* {
+    void Function(LlmResponse) onComplete, {
+    void Function(PromptProgress)? onProgress,
+  }) async* {
     final endpoint = '$_baseUrl/chat/completions';
     final resp = await _openStream(jsonEncode({
       'model': settings.selectedModel,
@@ -293,6 +300,7 @@ class ApiService {
       'max_tokens': settings.maxTokens,
       'tools': tools.map((t) => t.toOpenAiTool()).toList(),
       'tool_choice': 'auto',
+      'return_progress': true,
     }));
 
     // ── JSON fallback ────────────────────────────────────────────────────────
@@ -377,6 +385,9 @@ class ApiService {
         if (data == '[DONE]') break;
         try {
           final json = jsonDecode(data) as Map<String, dynamic>;
+
+          final progress = PromptProgress.tryParse(json['prompt_progress']);
+          if (progress != null) onProgress?.call(progress);
 
           // Capture usage (may arrive in a chunk with empty choices).
           final usage = json['usage'] as Map<String, dynamic>?;

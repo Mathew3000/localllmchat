@@ -34,6 +34,14 @@ class BEToken extends BackendEvent {
       required this.content});
 }
 
+/// Prompt-ingestion progress relayed from llama.cpp before the first token.
+class BEPromptProgress extends BackendEvent {
+  final String conversationId;
+  final PromptProgress progress;
+  const BEPromptProgress(
+      {required this.conversationId, required this.progress});
+}
+
 class BEMessageComplete extends BackendEvent {
   final String conversationId;
   final Map<String, dynamic> message;
@@ -442,6 +450,14 @@ class BackendService {
             messageId: msg['message_id'] as String,
             content: msg['content'] as String,
           ));
+        case 'prompt_progress':
+          final progress = PromptProgress.tryParse(msg);
+          if (progress != null) {
+            _events.add(BEPromptProgress(
+              conversationId: msg['conversation_id'] as String,
+              progress: progress,
+            ));
+          }
         case 'message_complete':
           final usage = msg['usage'] as Map<String, dynamic>?;
           _events.add(BEMessageComplete(
