@@ -13,16 +13,27 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     companion object {
-        private const val STREAMING_CHANNEL = "com.local.local_llm_chat/streaming"
-        private const val UPDATE_CHANNEL = "com.local.local_llm_chat/update"
+        private const val STREAMING_CHANNEL  = "com.local.local_llm_chat/streaming"
+        private const val AUTO_CHANNEL       = "com.local.local_llm_chat/android_auto"
+        private const val UPDATE_CHANNEL     = "com.local.local_llm_chat/update"
+
+        /**
+         * Kept here so [ReplyReceiver] can forward voice replies to Flutter
+         * without needing a Context → Activity lookup.
+         * Null when the engine is not running.
+         */
+        @JvmStatic
+        var autoChannel: MethodChannel? = null
+            private set
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        // ── Streaming keep-alive service channel ─────────────────────────────
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            STREAMING_CHANNEL
+            STREAMING_CHANNEL,
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "start" -> {
@@ -42,9 +53,41 @@ class MainActivity : FlutterActivity() {
             }
         }
 
+        // ── Android Auto channel ──────────────────────────────────────────────
+        val channel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AUTO_CHANNEL,
+        )
+        autoChannel = channel
+        AutoNotificationHelper.ensureChannel(this)
+
+        channel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "postMessage" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val args = call.arguments as? Map<String, Any> ?: emptyMap()
+                    AutoNotificationHelper.postMessage(
+                        context     = this,
+                        senderName  = args["senderName"]  as? String ?: "You",
+                        userText    = args["userText"]    as? String ?: "",
+                        replyText   = args["replyText"]   as? String ?: "",
+                        timestamp   = (args["timestamp"]  as? Number)?.toLong()
+                                        ?: System.currentTimeMillis(),
+                    )
+                    result.success(null)
+                }
+                "cancel" -> {
+                    AutoNotificationHelper.cancel(this)
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // ── In-app update channel ─────────────────────────────────────────────
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            UPDATE_CHANNEL
+            UPDATE_CHANNEL,
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 // Returns "ok", or "needs_permission" after opening the
@@ -81,5 +124,20 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    override fun onDestroy() {
+        autoChannel = null
+        super.onDestroy()
+    }
+
+    /**
+     * Android Auto voice replies arrive here when the app is in the
+     * foreground (singleTop re-delivery).  Background replies go directly
+     * to [ReplyReceiver], which calls [autoChannel] if the engine is alive.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Nothing extra needed — ReplyReceiver handles the RemoteInput bundle.
     }
 }

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Declares that this app provides Android Auto messaging functionality.
+    Required by the Automotive OS / Android Auto framework to surface the app
+    in the car's messaging hub.
+-->
+<automotiveApp>
+    <uses name="notification"/>
+</automotiveApp>

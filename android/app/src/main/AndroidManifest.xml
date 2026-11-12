@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
 
+    <!-- Android Auto voice replies require notification posting permission (Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
     <!-- Keep CPU alive while streaming (screen-off / Doze) -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
@@ -71,6 +74,16 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/update_paths"/>
         </provider>
+
+        <!-- Android Auto: receives voice replies from the car -->
+        <receiver
+            android:name=".ReplyReceiver"
+            android:exported="false"/>
+
+        <!-- Android Auto: declares messaging support to the framework -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc"/>
 
         <meta-data
             android:name="flutterEmbedding"

@@ -22,6 +22,7 @@ import '../services/mcp_sse_service.dart';
 import '../services/storage_service.dart';
 import '../services/streaming_keep_alive.dart';
 import '../services/sync_service.dart';
+import '../services/android_auto_service.dart';
 import '../services/debug_logger.dart';
 import '../services/update_service.dart';
 
@@ -119,6 +120,12 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Currently selected folder path (session-only, never persisted).
   String? _fileMcpFolder;
+
+  // ── Android Auto ─────────────────────────────────────────────────────────
+  late final AndroidAutoService _autoService;
+  /// Tracks whether the app is in the background so we only post
+  /// Auto notifications when the user can't see the chat directly.
+  AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
 
   // ── Memory pre-fetch cache ────────────────────────────────────────────────
   String? _cachedMemoryContext;
@@ -518,12 +525,17 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   AppProvider() {
     WidgetsBinding.instance.addObserver(this);
+    _autoService = AndroidAutoService(
+      onReply: (text) => sendMessage(text),
+    );
+    _autoService.init();
     _init();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _autoService.dispose();
     _disconnectBackend();
     super.dispose();
   }
@@ -532,7 +544,12 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _onAppResumed();
+    _lifecycleState = state;
+    if (state == AppLifecycleState.resumed) {
+      // Cancel any pending Auto notification — user is looking at the screen.
+      unawaited(_autoService.cancel());
+      _onAppResumed();
+    }
   }
 
   /// Called when the app returns to the foreground.
@@ -1992,6 +2009,24 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           // Discard any buffered tokens — generation is complete and the
           // canonical content will be loaded from the DB via _loadThenAutoTitle.
           _pendingTokens.remove(cid);
+          // ── Android Auto: post notification when app is backgrounded ──────
+          final assistantText = _streamingBackendMsg?.content ?? '';
+          if (assistantText.isNotEmpty &&
+              _lifecycleState != AppLifecycleState.resumed) {
+            // Find the last user message to show as conversation context.
+            final conv = _conversations.firstWhere(
+              (c) => c.id == cid,
+              orElse: () => _activeConversation!,
+            );
+            final userMsg = conv.messages
+                .lastWhere((m) => m.role == Role.user, orElse: () => Message(role: Role.user, content: ''))
+                .content;
+            unawaited(_autoService.postMessage(
+              senderName: 'You',
+              userText: userMsg,
+              replyText: assistantText,
+            ));
+          }
           _streamingBackendMsg?.isStreaming = false;
           _streamingBackendMsg = null;
           if (pt != null) {
@@ -2291,6 +2326,18 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
           notifyListeners();
           _processNextInQueue();
           unawaited(_maybeAutoTitle(conv));
+          // Post Auto notification when the app is in the background.
+          if (assistantMsg.content.isNotEmpty &&
+              _lifecycleState != AppLifecycleState.resumed) {
+            final userText = conv.messages
+                .lastWhere((m) => m.role == Role.user, orElse: () => Message(role: Role.user, content: ''))
+                .content;
+            unawaited(_autoService.postMessage(
+              senderName: 'You',
+              userText: userText,
+              replyText: assistantMsg.content,
+            ));
+          }
         },
         onError: (Object e) {
           assistantMsg.isStreaming = false;
