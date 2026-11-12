@@ -15,6 +15,10 @@ class Conversation {
   /// Last known prompt-token count for this conversation.  Persisted so the
   /// context-usage ring survives restarts and syncs across devices.
   int? lastPromptTokens;
+  /// The [Personality] assigned to this conversation. Set at creation and
+  /// locked once the first message is sent. Null only for legacy chats
+  /// (migrated to the default personality on first load).
+  String? personalityId;
   /// Transient: true when the backend reports that a generation is actively
   /// in progress for this conversation.  Never stored locally.
   bool isGenerating;
@@ -29,6 +33,7 @@ class Conversation {
     this.userBubbleColor,
     this.assistantBubbleColor,
     this.lastPromptTokens,
+    this.personalityId,
     this.isGenerating = false,
   })  : id = id ?? const Uuid().v4(),
         title = title ?? 'New Chat',
@@ -46,6 +51,7 @@ class Conversation {
         'userBubbleColor': userBubbleColor,
         'assistantBubbleColor': assistantBubbleColor,
         'lastPromptTokens': lastPromptTokens,
+        'personalityId': personalityId,
       };
 
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
@@ -60,6 +66,7 @@ class Conversation {
         userBubbleColor: json['userBubbleColor'] as int?,
         assistantBubbleColor: json['assistantBubbleColor'] as int?,
         lastPromptTokens: json['lastPromptTokens'] as int?,
+        personalityId: json['personalityId'] as String?,
       );
 
   String get preview {

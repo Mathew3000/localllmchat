@@ -10,6 +10,7 @@ import 'package:http/io_client.dart';
 import '../models/conversation.dart';
 import '../models/mcp_server.dart';
 import '../models/message.dart';
+import '../models/personality.dart';
 import '../models/settings.dart';
 import '../models/tool_call.dart';
 import '../services/api_service.dart';
@@ -23,6 +24,7 @@ import '../services/streaming_keep_alive.dart';
 import '../services/sync_service.dart';
 import '../services/android_auto_service.dart';
 import '../services/debug_logger.dart';
+import '../services/update_service.dart';
 
 // ── Queued-message data class ─────────────────────────────────────────────────
 
@@ -170,6 +172,106 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Backend getters
   bool get backendConnecting => _backendConnecting;
+
+  // ── In-app updates (Android + LoomChat server) ──────────────────────────
+  AppUpdate? _availableUpdate;
+  bool _updateDismissed = false;
+  bool _updateBusy = false;
+  double? _updateProgress;
+  String? _updateMessage;
+  DateTime? _lastUpdateCheck;
+
+  /// A newer build than the installed one, if the server has one.
+  AppUpdate? get availableUpdate => _availableUpdate;
+
+  /// True when the update banner should show in the chat.
+  bool get showUpdateBanner =>
+      _availableUpdate != null && (!_updateDismissed || _updateBusy);
+  bool get updateBusy => _updateBusy;
+
+  /// Download progress 0..1, or null while unknown.
+  double? get updateProgress => _updateProgress;
+
+  /// Plain-language status or problem from the last update action.
+  String? get updateMessage => _updateMessage;
+  bool get canCheckForUpdates =>
+      UpdateService.supported && _settings.useBackend && _backend != null;
+
+  void dismissUpdate() {
+    _updateDismissed = true;
+    notifyListeners();
+  }
+
+  /// Asks the server for a newer build. Automatic checks run at most every
+  /// 6 hours; [manual] checks always run. Returns true if one was found.
+  Future<bool> checkForUpdate({bool manual = false}) async {
+    if (!canCheckForUpdates) return false;
+    final now = DateTime.now();
+    if (!manual &&
+        _lastUpdateCheck != null &&
+        now.difference(_lastUpdateCheck!) < const Duration(hours: 6)) {
+      return _availableUpdate != null;
+    }
+    _lastUpdateCheck = now;
+    try {
+      final info = await _backend!.fetchAndroidUpdateInfo();
+      final current = await UpdateService.currentBuild();
+      final build = (info?['build'] as num?)?.toInt() ?? 0;
+      if (info != null && build > current) {
+        _availableUpdate = AppUpdate(
+          version: info['version'] as String? ?? '',
+          build: build,
+          notes: info['notes'] as String? ?? '',
+        );
+        if (manual) _updateDismissed = false;
+        _updateMessage = null;
+      } else {
+        _availableUpdate = null;
+        if (manual) _updateMessage = 'You have the newest version.';
+      }
+    } catch (e) {
+      if (manual) _updateMessage = "Couldn't check for updates right now.";
+      DebugLogger.instance.logError('update', 'check', e);
+    }
+    notifyListeners();
+    return _availableUpdate != null;
+  }
+
+  /// Downloads the update through the LoomChat server and opens the
+  /// Android installer.
+  Future<void> installUpdate() async {
+    if (_updateBusy || _availableUpdate == null || _backend == null) return;
+    _updateBusy = true;
+    _updateProgress = null;
+    _updateMessage = 'Downloading the update…';
+    notifyListeners();
+    try {
+      final file = await UpdateService.apkFile();
+      var lastNotify = DateTime.now();
+      await _backend!.downloadAndroidUpdate(file, onProgress: (p) {
+        _updateProgress = p;
+        final t = DateTime.now();
+        if (t.difference(lastNotify).inMilliseconds > 150) {
+          lastNotify = t;
+          notifyListeners();
+        }
+      });
+      _updateProgress = 1;
+      final started = await UpdateService.install(file);
+      _updateMessage = started
+          ? null
+          : 'Allow LoomChat to install apps in the screen that just opened, '
+              'then tap Update again.';
+    } catch (e) {
+      _updateMessage =
+          "The update couldn't be downloaded. Please try again later.";
+      DebugLogger.instance.logError('update', 'download', e);
+    } finally {
+      _updateBusy = false;
+      notifyListeners();
+    }
+  }
+
   String? get backendConnectError => _backendConnectError;
   bool get backendConnected => _backend?.isConnected ?? false;
   bool get backendUsingAway => _backendUsingAway;
@@ -187,19 +289,25 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   SyncStatus get syncStatus => _syncStatus;
   String? get syncError => _syncError;
 
-  /// Flat list of all tools from all enabled servers.
+  /// Flat list of all tools from all enabled servers (ignores personality).
+  /// Used for the MCP servers configuration screen.
   List<McpToolDef> get mcpTools =>
       _mcpToolsByServer.values.expand((l) => l).toList();
 
   /// True when any server is still loading tools.
   bool get fetchingMcpTools => _fetchingByServer.values.any((v) => v);
 
-  /// True when MCP is configured, tools loaded, AND runtime toggle is on.
-  bool get mcpAvailable =>
-      _settings.mcpEnabled && mcpTools.isNotEmpty && _mcpActive;
+  /// Tools active for the current conversation (filtered by personality).
+  List<McpToolDef> get activeMcpTools => _personalityMcpTools;
 
-  /// True when MCP is configured at all (ignoring runtime toggle).
-  bool get mcpConfigured => _settings.mcpEnabled && mcpTools.isNotEmpty;
+  /// True when MCP is configured, personality-filtered tools loaded, AND
+  /// runtime toggle is on.
+  bool get mcpAvailable =>
+      _settings.mcpEnabled && activeMcpTools.isNotEmpty && _mcpActive;
+
+  /// True when the active personality has any MCP tools available.
+  bool get mcpConfigured =>
+      _settings.mcpEnabled && activeMcpTools.isNotEmpty;
 
   // ── Per-server state for the MCP servers screen ───────────────────────────
 
@@ -303,14 +411,106 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Returns a copy of [_settings] with [memoryCtx] appended to the system
   /// prompt.  Used in direct-mode generation so both streaming and agentic
   /// paths receive the user context without any further plumbing.
+  // ── Personality helpers ───────────────────────────────────────────────────
+
+  /// The [Personality] object for the given conversation (falls back to the
+  /// first available personality, then null).
+  Personality? _effectivePersonality([Conversation? conv]) {
+    final pid = (conv ?? _activeConversation)?.personalityId;
+    if (pid == null || pid.isEmpty) return null;
+    try {
+      return _settings.personalities.firstWhere((p) => p.id == pid);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _effectiveSystemPrompt([Conversation? conv]) =>
+      _effectivePersonality(conv)?.systemPrompt ?? _settings.systemPrompt;
+
+  /// MCP tools from servers active for the current conversation's personality.
+  /// The built-in file MCP is always included.
+  List<McpToolDef> get _personalityMcpTools {
+    final personality = _effectivePersonality();
+    if (personality == null) {
+      return _mcpToolsByServer.values.expand((l) => l).toList();
+    }
+    final ids = personality.activeMcpServerIds;
+    return [
+      for (final entry in _mcpToolsByServer.entries)
+        if (entry.key == _kFileMcpId || ids.contains(entry.key))
+          ...entry.value,
+    ];
+  }
+
+  // ── Public personality API ────────────────────────────────────────────────
+
+  /// The personality active for the currently open conversation.
+  Personality? get activePersonality => _effectivePersonality();
+
+  /// Change the personality for the active conversation.
+  /// No-op if the conversation already has messages (personality is locked).
+  void setConversationPersonality(String personalityId) {
+    final conv = _activeConversation;
+    if (conv == null || conv.messages.isNotEmpty) return;
+    conv.personalityId = personalityId;
+    if (!_settings.useBackend) unawaited(_persistConversations());
+    notifyListeners();
+  }
+
+  Future<void> addPersonality(Personality personality) async {
+    _settings = _settings.copyWith(
+      personalities: [..._settings.personalities, personality],
+    );
+    await _storage.saveSettings(_settings);
+    notifyListeners();
+  }
+
+  Future<void> updatePersonality(Personality updated) async {
+    _settings = _settings.copyWith(
+      personalities: _settings.personalities
+          .map((p) => p.id == updated.id ? updated : p)
+          .toList(),
+    );
+    await _storage.saveSettings(_settings);
+    notifyListeners();
+  }
+
+  Future<void> deletePersonality(String id) async {
+    if (_settings.personalities.length <= 1) return;
+    final newList =
+        _settings.personalities.where((p) => p.id != id).toList();
+    final newDefaultId = _settings.defaultPersonalityId == id
+        ? newList.first.id
+        : _settings.defaultPersonalityId;
+    _settings = _settings.copyWith(
+      personalities: newList,
+      defaultPersonalityId: newDefaultId,
+    );
+    await _storage.saveSettings(_settings);
+    notifyListeners();
+  }
+
+  Future<void> setDefaultPersonality(String id) async {
+    _settings = _settings.copyWith(defaultPersonalityId: id);
+    await _storage.saveSettings(_settings);
+    notifyListeners();
+  }
+
+  // ── Settings + memory helper ──────────────────────────────────────────────
+
   AppSettings _settingsWithMemory(String? memoryCtx) {
-    if (memoryCtx == null || memoryCtx.isEmpty) return _settings;
+    final effectivePrompt = _effectiveSystemPrompt();
+    if (memoryCtx == null || memoryCtx.isEmpty) {
+      if (effectivePrompt == _settings.systemPrompt) return _settings;
+      return _settings.copyWith(systemPrompt: effectivePrompt);
+    }
     const separator = '\n\n---\n**About the user (from memory):**\n';
     const footer =
         '\n\nUse the memory tools to look up more details or save new '
         'information you learn about the user during this conversation.';
     return _settings.copyWith(
-      systemPrompt: _settings.systemPrompt + separator + memoryCtx + footer,
+      systemPrompt: effectivePrompt + separator + memoryCtx + footer,
     );
   }
 
@@ -423,6 +623,38 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       folderPath: _settings.debugLogPath,
     );
     _conversations = await _storage.loadConversations();
+
+    // ── Personality migration ─────────────────────────────────────────────
+    // First launch after the feature lands: create a "Default" personality
+    // seeded from the existing global system prompt + all enabled MCP servers.
+    if (_settings.personalities.isEmpty) {
+      final defaultP = Personality(
+        name: 'Default',
+        systemPrompt: _settings.systemPrompt,
+        activeMcpServerIds: _settings.mcpServers
+            .where((s) => s.enabled)
+            .map((s) => s.id)
+            .toSet(),
+      );
+      _settings = _settings.copyWith(
+        personalities: [defaultP],
+        defaultPersonalityId: defaultP.id,
+      );
+      await _storage.saveSettings(_settings);
+    }
+    // Assign the default personality to any conversation that doesn't have one.
+    final defaultId = _settings.defaultPersonalityId;
+    if (defaultId.isNotEmpty) {
+      var needsSave = false;
+      for (final conv in _conversations) {
+        if (conv.personalityId == null || conv.personalityId!.isEmpty) {
+          conv.personalityId = defaultId;
+          needsSave = true;
+        }
+      }
+      if (needsSave) await _persistConversations();
+    }
+
     if (_conversations.isNotEmpty) {
       final visible = _conversations.where((c) => !c.isSecret).toList();
       _activeConversation = visible.isNotEmpty ? visible.first : null;
@@ -861,10 +1093,18 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   // ── Settings ──────────────────────────────────────────────────────────────
 
   Future<void> updateSettings(AppSettings newSettings) async {
+    // Only forget the fetched model list when the AI endpoint itself changed;
+    // ordinary edits (colours, sliders) must not wipe it.
+    final endpointChanged = newSettings.baseUrlHome != _settings.baseUrlHome ||
+        newSettings.baseUrlAway != _settings.baseUrlAway ||
+        newSettings.apiKey != _settings.apiKey ||
+        newSettings.useBackend != _settings.useBackend;
     _settings = newSettings;
     await _storage.saveSettings(_settings);
-    _availableModels = [];
-    _lastNetworkCheck = null;
+    if (endpointChanged) {
+      _availableModels = [];
+      _lastNetworkCheck = null;
+    }
     _startAutoSync(); // restart in case interval or enabled flag changed
     // Push shared settings to backend so run_generation() picks them up.
     // Errors are swallowed — if the push fails here the settings will be
@@ -1096,6 +1336,16 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Load conversations from the backend
       final convs = await _backend!.fetchConversations();
       _conversations = convs;
+      // personalityId is client-only metadata not stored on the backend.
+      // Assign the default personality to any conversation that lacks one.
+      final defaultPid = _settings.defaultPersonalityId;
+      if (defaultPid.isNotEmpty) {
+        for (final conv in _conversations) {
+          if (conv.personalityId == null || conv.personalityId!.isEmpty) {
+            conv.personalityId = defaultPid;
+          }
+        }
+      }
       final visibleConvs = convs.where((c) => !c.isSecret).toList();
       _activeConversation = visibleConvs.isNotEmpty ? visibleConvs.first : null;
 
@@ -1125,6 +1375,8 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       // and must be reached by the client — fetch their tools now so they can
       // be relayed through the WebSocket during generation.
       _fetchAllMcpTools(localOnlyOnly: true);
+      // Look for a newer app version in the background.
+      unawaited(checkForUpdate());
 
       // Schedule the proactive token-renewal timer now that we are fully
       // connected.  The timer fires ~10 min before the 7-day access token
@@ -1330,16 +1582,18 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
   // ── Conversations ─────────────────────────────────────────────────────────
 
   Future<void> newConversation() async {
+    final pid = _settings.defaultPersonalityId;
     if (_settings.useBackend && _backend != null) {
       try {
         final conv = await _backend!.createConversation();
+        if (pid.isNotEmpty) conv.personalityId = pid;
         _conversations.insert(0, conv);
         _activeConversation = conv;
       } catch (e) {
         _error = 'Failed to create conversation: $e';
       }
     } else {
-      final conv = Conversation();
+      final conv = Conversation(personalityId: pid.isNotEmpty ? pid : null);
       _conversations.insert(0, conv);
       _activeConversation = conv;
       _persistConversations();
@@ -1668,19 +1922,23 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     // _executeRelayedToolCall.
     final List<Map<String, dynamic>> localOnlyTools = [];
     if (_mcpActive) {
+      final activeIds = _effectivePersonality()?.activeMcpServerIds;
       for (final server in _settings.mcpServers) {
         if (!server.enabled || !server.localOnly) continue;
+        // Skip servers not in the active personality's set.
+        if (activeIds != null && !activeIds.contains(server.id)) continue;
         for (final tool in (_mcpToolsByServer[server.id] ?? [])) {
           localOnlyTools.add(tool.toOpenAiTool());
         }
       }
-      // Built-in file MCP (session folder, if selected).
+      // Built-in file MCP is always included (not personality-scoped).
       for (final tool in (_mcpToolsByServer[_kFileMcpId] ?? [])) {
         localOnlyTools.add(tool.toOpenAiTool());
       }
     }
 
     try {
+      final personality = _effectivePersonality();
       await _backend!.sendMessage(
         conv.id,
         actualUserMsg.content,
@@ -1696,6 +1954,13 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         clientDatetime: settings.injectDateTime
             ? DateFormat('EEEE, d MMMM yyyy, HH:mm').format(DateTime.now())
             : null,
+        // Active personality's own system prompt — overrides the backend's
+        // stored global systemPrompt for this message.
+        systemPrompt: _effectiveSystemPrompt(),
+        // Scope backend-side (non-local) MCP servers to the personality's
+        // selection. Null (no personality — legacy conversations) means no
+        // restriction, preserving old behavior.
+        activeMcpServerIds: personality?.activeMcpServerIds.toList(),
       );
     } catch (e) {
       assistantMsg.isStreaming = false;
@@ -2123,7 +2388,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
         LlmResponse? response;
         await for (final chunk in api.streamChatWithTools(
           history,
-          mcpTools,
+          activeMcpTools,
           (r) => response = r,
         )) {
           activeMsg.content += chunk;

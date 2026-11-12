@@ -57,14 +57,14 @@ class _McpServersScreenState extends State<McpServersScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('MCP Servers'),
+        title: const Text('Tools'),
         elevation: 0,
         scrolledUnderElevation: 1,
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _addServer,
         icon: const Icon(Icons.add_rounded),
-        label: const Text('Add server'),
+        label: const Text('Add tool server'),
       ),
       body: _servers.isEmpty
           ? _EmptyState(onAdd: _addServer)

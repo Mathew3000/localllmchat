@@ -358,10 +358,16 @@ async def build_mcp_client(
 
 async def load_tools_from_settings(
     settings: dict,
+    allowed_server_ids: set[str] | None = None,
 ) -> tuple[list[dict], dict[str, AnyMcpClient]]:
     """
     Read mcpServers from the stored settings blob, connect to each enabled
     server, and collect OpenAI-format tool definitions.
+
+    allowed_server_ids restricts which servers are considered — used to scope
+    tools to the active conversation's personality. None means no restriction
+    (all enabled servers), which preserves the old behavior for legacy
+    conversations that have no personality assigned.
 
     Returns:
         (openai_tools, tool_clients)
@@ -374,6 +380,8 @@ async def load_tools_from_settings(
 
     for server in servers:
         if not server.get("enabled", True):
+            continue
+        if allowed_server_ids is not None and server.get("id") not in allowed_server_ids:
             continue
         if server.get("localOnly", False):
             # Local-only servers are reached by the client (not the backend).
@@ -404,11 +412,17 @@ async def load_tools_from_settings(
     return openai_tools, tool_clients
 
 
-async def fetch_memory_context(settings: dict) -> str | None:
+async def fetch_memory_context(
+    settings: dict,
+    allowed_server_ids: set[str] | None = None,
+) -> str | None:
     """
     If a memory MCP server is configured, call search_nodes("user") on it
     and return the result string.  Returns None on any failure or if no
     memory server is configured.
+
+    allowed_server_ids restricts which servers are considered — same scoping
+    as load_tools_from_settings.
     """
     servers: list[dict] = settings.get("mcpServers", [])
     memory_server = next(
@@ -417,6 +431,7 @@ async def fetch_memory_context(settings: dict) -> str | None:
             if s.get("isMemory")
             and s.get("enabled", True)
             and not s.get("localOnly", False)  # can't reach client-local servers
+            and (allowed_server_ids is None or s.get("id") in allowed_server_ids)
         ),
         None,
     )

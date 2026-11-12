@@ -12,10 +12,20 @@ import 'debug_logger.dart';
 class ApiService {
   final AppSettings settings;
   final String _url;
-  // Lazily-created HTTP client; respects allowSelfSigned for LAN self-signed certs.
-  late final http.Client _client = settings.allowSelfSigned
-      ? IOClient(HttpClient()..badCertificateCallback = (_, __, ___) => true)
-      : http.Client();
+  // Lazily-created HTTP client. Always uses our own HttpClient (rather than
+  // the package's default) so we can raise idleTimeout well above its 15s
+  // default — reasoning models can pause for well over 15s between chunks
+  // (heavier with tool-call grammar constraints), and Dart's HttpClient
+  // force-closes the socket once a connection looks idle for that long,
+  // which surfaces to callers as "peer closed connection ... incomplete
+  // chunked read" even though the server is still generating fine.
+  late final http.Client _client = IOClient(
+    HttpClient()
+      ..idleTimeout = const Duration(minutes: 10)
+      ..badCertificateCallback = settings.allowSelfSigned
+          ? (_, __, ___) => true
+          : null,
+  );
 
   ApiService(this.settings, String activeBaseUrl) : _url = activeBaseUrl;
 
@@ -36,11 +46,12 @@ class ApiService {
     bool toolsEnabled = false,
   }) {
     final messages = <Map<String, dynamic>>[];
-    // Build system prompt, optionally appending current date/time.
+    // Build system prompt with today's date. Date only (no time): a value
+    // that changes every minute here would invalidate the server's prompt
+    // cache on every request.
     final systemBase = settings.systemPrompt;
-    final dateTimeSuffix = settings.injectDateTime
-        ? '\n\nCurrent date and time: ${DateFormat("EEEE, d MMMM yyyy, HH:mm").format(DateTime.now())}'
-        : '';
+    final dateTimeSuffix =
+        '\n\nToday is ${DateFormat("EEEE, d MMMM yyyy").format(DateTime.now())}.';
     final systemContent = '$systemBase$dateTimeSuffix'.trim();
     if (systemContent.isNotEmpty) {
       messages.add({'role': 'system', 'content': systemContent});
@@ -73,14 +84,28 @@ class ApiService {
       'model': settings.selectedModel,
       'messages': [
         {
+          'role': 'system',
+          'content':
+              'You output only a single short title, nothing else. No thinking, '
+              'no reasoning steps, no explanation, no quotes. End your reply with '
+              "exactly one line in the format 'TITLE: <the title>' and nothing "
+              'after it.',
+        },
+        {
           'role': 'user',
           'content':
-              'Generate a conversation title for a conversation that starts with '
-              '`$firstMessage`. Reply with only the title, no quotes.',
+              'Generate a conversation title (max 6 words) for a conversation '
+              'that starts with: `$firstMessage`',
         }
       ],
       'stream': false,
-      'max_tokens': 20,
+      // Reasoning models (e.g. Qwen3) can spend several hundred tokens on
+      // their <think>/reasoning_content trace before emitting the actual
+      // TITLE line — too small a budget truncates mid-thought and the
+      // regex fallback picks up a fragment of the reasoning instead.
+      'max_tokens': 1024,
+      'enable_thinking': false,
+      'chat_template_kwargs': {'enable_thinking': false},
     });
     DebugLogger.instance.logRequest('LLM', 'POST', uri.toString(), body);
     final response = await _client
@@ -96,10 +121,36 @@ class ApiService {
     if (choices.isEmpty) throw Exception('fetchTitle: empty choices');
     final msg = (choices[0] as Map<String, dynamic>)['message']
         as Map<String, dynamic>;
-    var title = (msg['content'] as String? ?? '').trim();
-    title = title.replaceAll(RegExp(r'''^["'`]+|["'`]+$'''), '');
+    final raw = (msg['content'] as String? ?? msg['reasoning_content'] as String? ?? '');
+    var title = _extractTitle(raw);
     if (title.length > 60) title = '${title.substring(0, 60).trimRight()}…';
     return title;
+  }
+
+  /// Pulls the actual title out of a raw LLM reply. Reasoning models don't
+  /// reliably honor "no thinking" instructions — some emit proper
+  /// `<think>…</think>` blocks, others dump a chain-of-thought preamble
+  /// ("Thinking Process:\n1. ...") as plain text before the answer. We ask
+  /// the model to end with a `TITLE: ...` marker line and prefer that; if
+  /// missing, fall back to the last non-empty line so a leading reasoning
+  /// dump doesn't become the title.
+  static String _extractTitle(String raw) {
+    var text = raw.trim();
+    text = text.replaceAll(RegExp(r'<think>[\s\S]*?</think>'), '');
+    text = text.replaceAll(RegExp(r'<think>[\s\S]*'), '');
+
+    final matches =
+        RegExp(r'^\s*title\s*:\s*(.+?)\s*$', caseSensitive: false, multiLine: true)
+            .allMatches(text)
+            .toList();
+    String candidate;
+    if (matches.isNotEmpty) {
+      candidate = matches.last.group(1) ?? '';
+    } else {
+      final lines = text.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+      candidate = lines.isNotEmpty ? lines.last : text;
+    }
+    return candidate.trim().replaceAll(RegExp(r'''^["'`]+|["'`]+$'''), '');
   }
 
   Future<List<String>> fetchModels() async {

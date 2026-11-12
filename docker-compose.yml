@@ -17,6 +17,9 @@ services:
     build: ./backend
     restart: unless-stopped
     env_file: ./backend/.env
+    environment:
+      # Local timezone for the per-message timestamps sent to the model
+      - TZ=Europe/Berlin
     volumes:
       - backend-data:/data
     # Not exposed directly — all traffic goes through Caddy

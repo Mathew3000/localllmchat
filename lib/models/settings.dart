@@ -1,4 +1,5 @@
 import 'mcp_server.dart';
+import 'personality.dart';
 
 class AppSettings {
   final String baseUrlHome;
@@ -25,6 +26,13 @@ class AppSettings {
   final int requestTimeoutSeconds;
   /// All configured MCP servers.
   final List<McpServer> mcpServers;
+
+  // ── Personalities ──────────────────────────────────────────────────────────
+  /// All defined personalities. Always contains at least one entry after
+  /// the first launch (auto-migration creates a "Default" personality).
+  final List<Personality> personalities;
+  /// ID of the personality pre-selected when a new conversation is created.
+  final String defaultPersonalityId;
 
   // ── Sync settings ──────────────────────────────────────────────────────────
   /// Base URL of the self-hosted sync server, e.g. http://192.168.1.10:8080
@@ -123,6 +131,8 @@ class AppSettings {
     this.highlightColor,
     this.requestTimeoutSeconds = 300,
     this.mcpServers = const [],
+    this.personalities = const [],
+    this.defaultPersonalityId = '',
     this.syncUrl = '',
     this.syncUsername = '',
     this.syncAccessToken = '',
@@ -171,6 +181,8 @@ class AppSettings {
     Object? highlightColor = _unset,
     int? requestTimeoutSeconds,
     List<McpServer>? mcpServers,
+    List<Personality>? personalities,
+    String? defaultPersonalityId,
     String? syncUrl,
     String? syncUsername,
     String? syncAccessToken,
@@ -218,6 +230,8 @@ class AppSettings {
         requestTimeoutSeconds:
             requestTimeoutSeconds ?? this.requestTimeoutSeconds,
         mcpServers: mcpServers ?? this.mcpServers,
+        personalities: personalities ?? this.personalities,
+        defaultPersonalityId: defaultPersonalityId ?? this.defaultPersonalityId,
         syncUrl: syncUrl ?? this.syncUrl,
         syncUsername: syncUsername ?? this.syncUsername,
         syncAccessToken: syncAccessToken ?? this.syncAccessToken,
@@ -257,6 +271,8 @@ class AppSettings {
         'highlightColor': highlightColor,
         'requestTimeoutSeconds': requestTimeoutSeconds,
         'mcpServers': mcpServers.map((s) => s.toJson()).toList(),
+        'personalities': personalities.map((p) => p.toJson()).toList(),
+        'defaultPersonalityId': defaultPersonalityId,
         'syncUrl': syncUrl,
         'syncUsername': syncUsername,
         'syncAccessToken': syncAccessToken,
@@ -342,6 +358,10 @@ class AppSettings {
       requestTimeoutSeconds:
           json['requestTimeoutSeconds'] as int? ?? 300,
       mcpServers: mcpServers,
+      personalities: (json['personalities'] as List<dynamic>? ?? [])
+          .map((e) => Personality.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      defaultPersonalityId: json['defaultPersonalityId'] as String? ?? '',
       syncUrl: json['syncUrl'] as String? ?? '',
       syncUsername: json['syncUsername'] as String? ?? '',
       syncAccessToken: json['syncAccessToken'] as String? ?? '',

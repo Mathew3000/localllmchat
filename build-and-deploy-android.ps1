@@ -81,8 +81,10 @@ try {
     # ── Build ─────────────────────────────────────────────────────────────────
 
     if (-not $InstallOnly) {
-        Write-Step "Building release APK..."
-        flutter build apk --release
+        # Same build number as CI (commit count) so in-app updates compare correctly.
+        $buildNumber = (git rev-list --count HEAD).Trim()
+        Write-Step "Building release APK (build $buildNumber)..."
+        flutter build apk --release --build-number=$buildNumber
         if ($LASTEXITCODE -ne 0) {
             Write-Fail "flutter build apk --release failed (exit $LASTEXITCODE)."
             exit $LASTEXITCODE

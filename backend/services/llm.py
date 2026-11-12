@@ -16,9 +16,12 @@ result so the device receives the completed message on next load.
 
 import asyncio
 import json
+import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,13 +31,34 @@ from models import Conversation, Message, UserSettings
 from services.ws_hub import hub
 from services.mcp import AnyMcpClient, fetch_memory_context, load_tools_from_settings
 
+logger = logging.getLogger(__name__)
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _dt_string() -> str:
+def _dt_string(dt: datetime | None = None) -> str:
     """Human-readable datetime without platform-specific format codes."""
-    now = datetime.now()
+    now = dt or datetime.now()
     return f"{now.strftime('%A')}, {now.day} {now.strftime('%B %Y, %H:%M')}"
+
+
+def _local_tz() -> ZoneInfo:
+    try:
+        return ZoneInfo(os.environ.get("TZ") or "UTC")
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def _msg_timestamp(created_at: datetime) -> str:
+    """Send time of a stored message in local time, e.g. "[Friday, 6 November 2026, 14:39]".
+
+    Derived from the stored created_at so it never changes between requests,
+    which keeps the server-side prompt cache valid (a per-request timestamp in
+    the system prompt invalidates the whole cache every minute).
+    """
+    if created_at.tzinfo is None:  # SQLite returns naive UTC datetimes
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return f"[{_dt_string(created_at.astimezone(_local_tz()))}]"
 
 
 def _strip_thinking(text: str) -> str:
@@ -63,15 +87,27 @@ def _build_messages(
     tools_enabled: bool | None = None,
     memory_context: str | None = None,
     client_datetime: str | None = None,
+    system_prompt_override: str | None = None,
 ) -> list[dict]:
     """Convert ORM message list to OpenAI chat/completions payload."""
     messages: list[dict] = []
     preserve_thinking: bool = bool(settings.get("preserveThinking", False))
 
-    system_prompt: str = settings.get("systemPrompt", "")
-    if settings.get("injectDateTime"):
-        dt_str = client_datetime if client_datetime else _dt_string()
-        system_prompt += f"\n\nCurrent date and time: {dt_str}"
+    # The client sends the active personality's system prompt per-message;
+    # fall back to the stored global prompt for legacy conversations.
+    system_prompt: str = (
+        system_prompt_override
+        if system_prompt_override is not None
+        else settings.get("systemPrompt", "")
+    )
+    # Always on (the "injectDateTime" setting was removed). Static text only:
+    # the actual times are stamped on each user message so the prompt prefix
+    # stays cacheable. client_datetime is unused; kept for API compatibility.
+    inject_dt = True
+    system_prompt += (
+        "\n\nEach user message starts with the local date and time it was "
+        "sent, in square brackets. The newest one is the current time."
+    )
     if memory_context:
         system_prompt += (
             "\n\n---\n**About the user (from memory):**\n"
@@ -113,8 +149,11 @@ def _build_messages(
                 {"type": "image_url", "image_url": {"url": img}}
                 for img in msg.images
             ]
-            if msg.content:
-                content.append({"type": "text", "text": msg.content})
+            text = msg.content or ""
+            if inject_dt:
+                text = f"{_msg_timestamp(msg.created_at)} {text}".rstrip()
+            if text:
+                content.append({"type": "text", "text": text})
             m["content"] = content
         elif msg.role == "assistant":
             # Strip or preserve thinking tokens based on the setting.
@@ -130,6 +169,8 @@ def _build_messages(
             # Drop assistant messages that are empty after processing.
             if not m.get("content") and not m.get("reasoning_content"):
                 continue
+        elif msg.role == "user" and inject_dt:
+            m["content"] = f"{_msg_timestamp(msg.created_at)} {msg.content or ''}".rstrip()
         else:
             m["content"] = msg.content
 
@@ -148,6 +189,8 @@ async def run_generation(
     tools: list[dict] | None = None,
     memory_context: str | None = None,
     client_datetime: str | None = None,
+    system_prompt_override: str | None = None,
+    active_mcp_server_ids: list[str] | None = None,
 ) -> None:
     """
     Background task: stream LLM response and persist the result.
@@ -158,6 +201,12 @@ async def run_generation(
     the LLM may request tool calls which are forwarded to the Flutter client
     for execution; results flow back via the WebSocket hub and the loop
     continues until the LLM produces a final text response.
+
+    system_prompt_override and active_mcp_server_ids scope generation to the
+    conversation's active personality: the personality's own system prompt is
+    used instead of the stored global one, and only MCP servers selected for
+    that personality are loaded server-side (client-relayed localOnly tools
+    are already scoped by the client before it calls sendMessage).
     """
     MAX_TOOL_ITERATIONS = 10
 
@@ -168,6 +217,11 @@ async def run_generation(
     thinking_closed = False
     conv: Conversation | None = None
     mcp_tool_clients: dict = {}
+    # Set once we've retried a request without tools after the LLM server
+    # dropped the connection outright — some local servers (llama.cpp-style
+    # grammar-constrained decoding) crash on a large/complex combined tool
+    # schema. Prevents retrying more than once per generation.
+    tools_retry_used = False
 
     async def _send(data: dict) -> None:
         """Fire-and-forget send; silently swallows send errors."""
@@ -209,10 +263,25 @@ async def run_generation(
         # When the client sends no tools, the backend reads mcpServers from the
         # stored user settings, connects to them directly, and handles tool
         # execution itself — no round-trip to the Flutter client needed.
+        allowed_ids = (
+            set(active_mcp_server_ids) if active_mcp_server_ids is not None else None
+        )
         if not tools:
-            tools, mcp_tool_clients = await load_tools_from_settings(settings)
+            tools, mcp_tool_clients = await load_tools_from_settings(
+                settings, allowed_server_ids=allowed_ids
+            )
             if not memory_context:
-                memory_context = await fetch_memory_context(settings)
+                memory_context = await fetch_memory_context(
+                    settings, allowed_server_ids=allowed_ids
+                )
+
+        if tools:
+            logger.info(
+                "conversation %s: sending %d MCP tool(s) to LLM: %s",
+                conversation_id,
+                len(tools),
+                ", ".join(t.get("function", {}).get("name", "?") for t in tools),
+            )
 
         # ── Create placeholder assistant message ──────────────────────────────
         assistant_msg = Message(
@@ -257,6 +326,7 @@ async def run_generation(
                     tools_enabled=bool(tools),
                     memory_context=memory_context,
                     client_datetime=client_datetime,
+                    system_prompt_override=system_prompt_override,
                 ),
                 "stream": True,
                 "stream_options": {"include_usage": True},
@@ -268,105 +338,128 @@ async def run_generation(
                 payload["tool_choice"] = "auto"
 
             # ── Stream from LLM ───────────────────────────────────────────────
-            async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
-                async with client.stream(
-                    "POST",
-                    f"{base_url}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                ) as resp:
-                    if resp.status_code != 200:
-                        body = await resp.aread()
-                        # Truncate the upstream error body to avoid leaking
-                        # sensitive content (e.g. API keys reflected by the
-                        # provider in authenticated error responses).
-                        excerpt = body.decode(errors="replace")[:300].strip()
-                        await _send({
-                            "type": "error",
-                            "conversation_id": conversation_id,
-                            "detail": f"LLM error {resp.status_code}: {excerpt}",
-                        })
-                        await db.delete(assistant_msg)
-                        await db.commit()
-                        assistant_msg = None
-                        return
+            # The whole streaming read is wrapped so a connection dropped
+            # outright by the LLM server (some local llama.cpp-style servers
+            # crash on a large/complex combined tool schema during grammar
+            # compilation) can trigger a one-time retry without tools instead
+            # of failing the whole turn.
+            aborted_for_retry = False
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    ) as resp:
+                        if resp.status_code != 200:
+                            body = await resp.aread()
+                            # Truncate the upstream error body to avoid leaking
+                            # sensitive content (e.g. API keys reflected by the
+                            # provider in authenticated error responses).
+                            excerpt = body.decode(errors="replace")[:300].strip()
+                            await _send({
+                                "type": "error",
+                                "conversation_id": conversation_id,
+                                "detail": f"LLM error {resp.status_code}: {excerpt}",
+                            })
+                            await db.delete(assistant_msg)
+                            await db.commit()
+                            assistant_msg = None
+                            return
 
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        data = line[6:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                            # Capture usage when present (may be in a chunk with empty choices).
-                            if chunk.get("usage"):
-                                usage_data = chunk["usage"]
-                            choices = chunk.get("choices", [])
-                            if not choices:
+                        async for line in resp.aiter_lines():
+                            if not line.startswith("data: "):
                                 continue
-                            delta = choices[0].get("delta", {})
+                            data = line[6:].strip()
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                # Capture usage when present (may be in a chunk with empty choices).
+                                if chunk.get("usage"):
+                                    usage_data = chunk["usage"]
+                                choices = chunk.get("choices", [])
+                                if not choices:
+                                    continue
+                                delta = choices[0].get("delta", {})
 
-                            # Accumulate tool call deltas (OpenAI streaming format)
-                            for tc in delta.get("tool_calls", []):
-                                idx = tc.get("index", 0)
-                                if idx not in tool_call_accum:
-                                    tool_call_accum[idx] = {
-                                        "id": "",
-                                        "name": "",
-                                        "arguments": "",
-                                    }
-                                if tc.get("id"):
-                                    tool_call_accum[idx]["id"] = tc["id"]
-                                fn = tc.get("function", {})
-                                if fn.get("name"):
-                                    tool_call_accum[idx]["name"] += fn["name"]
-                                if fn.get("arguments"):
-                                    tool_call_accum[idx]["arguments"] += fn["arguments"]
+                                # Accumulate tool call deltas (OpenAI streaming format)
+                                for tc in delta.get("tool_calls", []):
+                                    idx = tc.get("index", 0)
+                                    if idx not in tool_call_accum:
+                                        tool_call_accum[idx] = {
+                                            "id": "",
+                                            "name": "",
+                                            "arguments": "",
+                                        }
+                                    if tc.get("id"):
+                                        tool_call_accum[idx]["id"] = tc["id"]
+                                    fn = tc.get("function", {})
+                                    if fn.get("name"):
+                                        tool_call_accum[idx]["name"] += fn["name"]
+                                    if fn.get("arguments"):
+                                        tool_call_accum[idx]["arguments"] += fn["arguments"]
 
-                            # Thinking tokens (Qwen3 / reasoning models)
-                            reasoning = delta.get("reasoning_content")
-                            if reasoning:
-                                if not in_thinking:
-                                    tok = "<think>"
-                                    content_buf.append(tok)
+                                # Thinking tokens (Qwen3 / reasoning models)
+                                reasoning = delta.get("reasoning_content")
+                                if reasoning:
+                                    if not in_thinking:
+                                        tok = "<think>"
+                                        content_buf.append(tok)
+                                        await _send({
+                                            "type": "token",
+                                            "conversation_id": conversation_id,
+                                            "message_id": assistant_msg.id,
+                                            "content": tok,
+                                        })
+                                        in_thinking = True
+                                    content_buf.append(reasoning)
                                     await _send({
                                         "type": "token",
                                         "conversation_id": conversation_id,
                                         "message_id": assistant_msg.id,
-                                        "content": tok,
+                                        "content": reasoning,
                                     })
-                                    in_thinking = True
-                                content_buf.append(reasoning)
-                                await _send({
-                                    "type": "token",
-                                    "conversation_id": conversation_id,
-                                    "message_id": assistant_msg.id,
-                                    "content": reasoning,
-                                })
 
-                            # Regular content
-                            content = delta.get("content")
-                            if content:
-                                if in_thinking and not thinking_closed:
-                                    tok = "</think>"
-                                    content_buf.append(tok)
+                                # Regular content
+                                content = delta.get("content")
+                                if content:
+                                    if in_thinking and not thinking_closed:
+                                        tok = "</think>"
+                                        content_buf.append(tok)
+                                        await _send({
+                                            "type": "token",
+                                            "conversation_id": conversation_id,
+                                            "message_id": assistant_msg.id,
+                                            "content": tok,
+                                        })
+                                        thinking_closed = True
+                                    content_buf.append(content)
                                     await _send({
                                         "type": "token",
                                         "conversation_id": conversation_id,
                                         "message_id": assistant_msg.id,
-                                        "content": tok,
+                                        "content": content,
                                     })
-                                    thinking_closed = True
-                                content_buf.append(content)
-                                await _send({
-                                    "type": "token",
-                                    "conversation_id": conversation_id,
-                                    "message_id": assistant_msg.id,
-                                    "content": content,
-                                })
-                        except Exception:
-                            pass  # malformed SSE chunk — skip
+                            except Exception:
+                                pass  # malformed SSE chunk — skip
+            except httpx.HTTPError as exc:
+                if tools and not content_buf and not tools_retry_used:
+                    logger.warning(
+                        "conversation %s: LLM call failed with %d tools "
+                        "active (%s) — retrying without tools",
+                        conversation_id, len(tools), exc,
+                    )
+                    tools_retry_used = True
+                    tools = []
+                    mcp_tool_clients = {}
+                    aborted_for_retry = True
+                else:
+                    raise
+
+            if aborted_for_retry:
+                continue
 
             # Close any still-open think block
             if in_thinking and not thinking_closed:
@@ -594,6 +687,11 @@ async def run_generation(
     except Exception as e:
         if not mcp_tool_clients:
             hub.cancel_tool_futures(conversation_id)
+        logger.exception(
+            "conversation %s: generation failed (tools=%d)",
+            conversation_id,
+            len(tools) if tools else 0,
+        )
         await _send({
             "type": "error",
             "conversation_id": conversation_id,

@@ -1,9 +1,13 @@
 import 'dart:convert';
+import 'dart:io' show File;
+import 'dart:ui' as ui;
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:pasteboard/pasteboard.dart';
 import 'package:path/path.dart' as p;
 
 // ── Attached image data class ─────────────────────────────────────────────────
@@ -14,8 +18,7 @@ class AttachedImage {
   const AttachedImage({required this.bytes, required this.mime});
 
   /// Converts to a data URL for the API and storage.
-  String toDataUrl() =>
-      'data:$mime;base64,${base64Encode(bytes)}';
+  String toDataUrl() => 'data:$mime;base64,${base64Encode(bytes)}';
 }
 
 // ── Public widget ─────────────────────────────────────────────────────────────
@@ -217,6 +220,97 @@ class _ChatInputState extends State<ChatInput> {
     }
   }
 
+  // ── Clipboard paste (Ctrl+V) ───────────────────────────────────────────────
+
+  static const _imageExts = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
+
+  /// Ctrl+V: attach a copied image (or copied image files) if the clipboard
+  /// holds one, otherwise paste text as usual.
+  Future<void> _handlePaste() async {
+    try {
+      // Image files copied in the file explorer.
+      final files = await Pasteboard.files();
+      final imageFiles = files
+          .where((f) => _imageExts
+              .contains(p.extension(f).replaceFirst('.', '').toLowerCase()))
+          .toList();
+      if (imageFiles.isNotEmpty) {
+        for (final path in imageFiles) {
+          final bytes = await File(path).readAsBytes();
+          await _addPastedImage(bytes);
+        }
+        return;
+      }
+      // A screenshot or an image copied from a browser / other app.
+      final image = await Pasteboard.image;
+      if (image != null && image.isNotEmpty) {
+        await _addPastedImage(image);
+        return;
+      }
+    } catch (_) {
+      // Fall through to a normal text paste.
+    }
+    await _pasteText();
+  }
+
+  /// Keeps PNG/JPEG/GIF/WebP as they are; converts anything else (Windows
+  /// gives a BMP) to PNG, which every AI server understands.
+  Future<void> _addPastedImage(Uint8List bytes) async {
+    final mime = _sniffMime(bytes);
+    if (mime != null) {
+      _addImageBytes(bytes, mime);
+      return;
+    }
+    try {
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final data = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+      frame.image.dispose();
+      if (data != null) {
+        _addImageBytes(data.buffer.asUint8List(), 'image/png');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("That picture couldn't be pasted.")),
+      );
+    }
+  }
+
+  static String? _sniffMime(Uint8List b) {
+    if (b.length < 12) return null;
+    if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) {
+      return 'image/png';
+    }
+    if (b[0] == 0xFF && b[1] == 0xD8) return 'image/jpeg';
+    if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) return 'image/gif';
+    if (b[0] == 0x52 &&
+        b[1] == 0x49 &&
+        b[2] == 0x46 &&
+        b[3] == 0x46 &&
+        b[8] == 0x57 &&
+        b[9] == 0x45 &&
+        b[10] == 0x42 &&
+        b[11] == 0x50) {
+      return 'image/webp';
+    }
+    return null;
+  }
+
+  Future<void> _pasteText() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text == null || text.isEmpty) return;
+    final v = _controller.value;
+    final sel = v.selection.isValid
+        ? v.selection
+        : TextSelection.collapsed(offset: v.text.length);
+    _controller.value = TextEditingValue(
+      text: v.text.replaceRange(sel.start, sel.end, text),
+      selection: TextSelection.collapsed(offset: sel.start + text.length),
+    );
+  }
+
   // ── Send ───────────────────────────────────────────────────────────────────
 
   void _submit() {
@@ -302,7 +396,9 @@ class _ChatInputState extends State<ChatInput> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 2),
                 child: Tooltip(
-                  message: _hasCameraSupport ? 'Attach image / camera' : 'Attach image',
+                  message: _hasCameraSupport
+                      ? 'Add a picture or take a photo'
+                      : 'Add a picture (or paste one with Ctrl+V)',
                   child: IconButton(
                     onPressed: _onImageButtonPressed,
                     icon: Icon(
@@ -320,7 +416,9 @@ class _ChatInputState extends State<ChatInput> {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 2),
                   child: Tooltip(
-                    message: hasFolder ? 'Change folder' : 'Select folder for AI',
+                    message: hasFolder
+                        ? 'Choose a different folder'
+                        : 'Let the AI look at a folder',
                     child: IconButton(
                       onPressed: _pickFolder,
                       icon: Icon(
@@ -340,56 +438,66 @@ class _ChatInputState extends State<ChatInput> {
                     color: cs.surfaceContainerHigh,
                     borderRadius: BorderRadius.circular(24),
                   ),
-                  child: TextField(
-                    controller: _controller,
-                    focusNode: _focusNode,
-                    maxLines: 6,
-                    minLines: 1,
-                    textCapitalization: TextCapitalization.sentences,
-                    keyboardType: TextInputType.multiline,
-                    textInputAction: TextInputAction.newline,
-                    style: TextStyle(color: cs.onSurface, fontSize: 15),
-                    // Allow Android keyboards (e.g. GBoard) to insert images.
-                    contentInsertionConfiguration:
-                        ContentInsertionConfiguration(
-                      onContentInserted: (KeyboardInsertedContent data) {
-                        final bytes = data.data;
-                        if (bytes != null) {
-                          _addImageBytes(bytes, data.mimeType);
-                        }
-                      },
-                      allowedMimeTypes: const [
-                        'image/png',
-                        'image/jpeg',
-                        'image/gif',
-                        'image/webp',
-                      ],
+                  // Override the paste shortcut so copied pictures are attached.
+                  child: Actions(
+                    actions: {
+                      PasteTextIntent: CallbackAction<PasteTextIntent>(
+                        onInvoke: (_) {
+                          _handlePaste();
+                          return null;
+                        },
+                      ),
+                    },
+                    child: TextField(
+                      controller: _controller,
+                      focusNode: _focusNode,
+                      maxLines: 6,
+                      minLines: 1,
+                      textCapitalization: TextCapitalization.sentences,
+                      keyboardType: TextInputType.multiline,
+                      textInputAction: TextInputAction.newline,
+                      style: TextStyle(color: cs.onSurface, fontSize: 15),
+                      // Allow Android keyboards (e.g. GBoard) to insert images.
+                      contentInsertionConfiguration:
+                          ContentInsertionConfiguration(
+                        onContentInserted: (KeyboardInsertedContent data) {
+                          final bytes = data.data;
+                          if (bytes != null) {
+                            _addImageBytes(bytes, data.mimeType);
+                          }
+                        },
+                        allowedMimeTypes: const [
+                          'image/png',
+                          'image/jpeg',
+                          'image/gif',
+                          'image/webp',
+                        ],
+                      ),
+                      decoration: InputDecoration(
+                        hintText: widget.isStreaming
+                            ? (hasQueue
+                                ? 'Add another to queue…'
+                                : 'Queue a message…')
+                            : 'Ask anything…',
+                        hintStyle: TextStyle(
+                            color: cs.onSurfaceVariant.withValues(alpha: 0.7)),
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 12),
+                      ),
+                      onSubmitted: (_) => _submit(),
                     ),
-                    decoration: InputDecoration(
-                      hintText: widget.isStreaming
-                          ? (hasQueue
-                              ? 'Add another to queue…'
-                              : 'Queue a message…')
-                          : 'Message',
-                      hintStyle: TextStyle(
-                          color: cs.onSurfaceVariant.withValues(alpha: 0.7)),
-                      border: InputBorder.none,
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 18, vertical: 12),
-                    ),
-                    onSubmitted: (_) => _submit(),
                   ),
                 ),
               ),
               const SizedBox(width: 8),
-              if (widget.contextWindowTokens != null) ...[
+              // Only show once the chat has started using memory.
+              if (widget.contextWindowTokens != null &&
+                  (widget.promptTokens ?? 0) > 0)
                 _ContextRing(
-                  // Show an empty ring from the start; fills as tokens accumulate.
-                  promptTokens: widget.promptTokens ?? 0,
+                  promptTokens: widget.promptTokens!,
                   contextWindowTokens: widget.contextWindowTokens!,
                 ),
-                const SizedBox(width: 6),
-              ],
               _ActionButton(
                 isStreaming: widget.isStreaming,
                 canSend: canSend,
@@ -432,13 +540,11 @@ class _FolderChip extends StatelessWidget {
           const SizedBox(width: 4),
           Flexible(
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
                 color: cs.tertiaryContainer.withValues(alpha: 0.6),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                    color: cs.tertiary.withValues(alpha: 0.35)),
+                border: Border.all(color: cs.tertiary.withValues(alpha: 0.35)),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -469,7 +575,7 @@ class _FolderChip extends StatelessWidget {
           ),
           const SizedBox(width: 4),
           Text(
-            'folder accessible to AI',
+            'the AI can read this folder',
             style: theme.textTheme.labelSmall
                 ?.copyWith(color: cs.onSurfaceVariant),
           ),
@@ -491,44 +597,47 @@ class _ImageStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: images.asMap().entries.map((e) {
-            final idx = e.key;
-            final img = e.value;
-            return Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Stack(
-                alignment: Alignment.topRight,
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.memory(
-                      img.bytes,
-                      width: 72,
-                      height: 72,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                  GestureDetector(
-                    onTap: () => onRemove(idx),
-                    child: Container(
-                      margin: const EdgeInsets.all(3),
-                      width: 18,
-                      height: 18,
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.65),
-                        shape: BoxShape.circle,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: images.asMap().entries.map((e) {
+              final idx = e.key;
+              final img = e.value;
+              return Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Stack(
+                  alignment: Alignment.topRight,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.memory(
+                        img.bytes,
+                        width: 72,
+                        height: 72,
+                        fit: BoxFit.cover,
                       ),
-                      child: const Icon(Icons.close_rounded,
-                          size: 12, color: Colors.white),
                     ),
-                  ),
-                ],
-              ),
-            );
-          }).toList(),
+                    GestureDetector(
+                      onTap: () => onRemove(idx),
+                      child: Container(
+                        margin: const EdgeInsets.all(3),
+                        width: 18,
+                        height: 18,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.65),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.close_rounded,
+                            size: 12, color: Colors.white),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
         ),
       ),
     );
@@ -575,12 +684,12 @@ class _QueueStrip extends StatelessWidget {
                   onTap: onClear,
                   borderRadius: BorderRadius.circular(4),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     child: Text(
                       'Clear all',
-                      style: theme.textTheme.labelSmall
-                          ?.copyWith(color: cs.error),
+                      style:
+                          theme.textTheme.labelSmall?.copyWith(color: cs.error),
                     ),
                   ),
                 ),
@@ -594,9 +703,8 @@ class _QueueStrip extends StatelessWidget {
               children: queue.asMap().entries.map((e) {
                 final idx = e.key;
                 final text = e.value;
-                final label = text.length > 35
-                    ? '${text.substring(0, 35)}…'
-                    : text;
+                final label =
+                    text.length > 35 ? '${text.substring(0, 35)}…' : text;
                 return Padding(
                   padding: const EdgeInsets.only(right: 6),
                   child: _QueueChip(
@@ -686,6 +794,9 @@ class _QueueChip extends StatelessWidget {
 }
 
 // ── Context usage ring ────────────────────────────────────────────────────────
+//
+// A small ring that fills up as the chat gets longer. Numbers are only shown
+// on tap, in plain words.
 
 class _ContextRing extends StatelessWidget {
   final int promptTokens;
@@ -696,52 +807,50 @@ class _ContextRing extends StatelessWidget {
     required this.contextWindowTokens,
   });
 
-  String _fmt(int n) =>
-      n >= 1000 ? '${(n / 1000).toStringAsFixed(1)}k' : '$n';
+  String _fmt(int n) => n >= 1000 ? '${(n / 1000).toStringAsFixed(1)}k' : '$n';
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final ratio = (promptTokens / contextWindowTokens).clamp(0.0, 1.0);
+    final pct = (ratio * 100).round();
     final color = ratio < 0.7
         ? cs.primary
         : ratio < 0.9
             ? cs.tertiary
             : cs.error;
 
-    final label = '${_fmt(promptTokens)}\n/ ${_fmt(contextWindowTokens)}';
+    final message = ratio < 0.7
+        ? 'The AI can remember this whole chat ($pct% of its memory used).'
+        : ratio < 0.9
+            ? 'This chat is getting long ($pct% of the AI\'s memory used). '
+                'Consider starting a new chat soon.'
+            : 'This chat is almost too long for the AI to remember ($pct%). '
+                'Start a new chat for best results.';
 
     return Tooltip(
-      message: '${_fmt(promptTokens)} / ${_fmt(contextWindowTokens)} tokens used',
-      child: Padding(
-        padding: const EdgeInsets.only(bottom: 2),
-        child: SizedBox(
-          width: 44,
-          height: 44,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              SizedBox(
-                width: 44,
-                height: 44,
-                child: CircularProgressIndicator(
-                  value: ratio,
-                  strokeWidth: 3,
-                  backgroundColor: cs.surfaceContainerHighest,
-                  color: color,
-                ),
-              ),
-              Text(
-                label,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 8.5,
-                  height: 1.2,
-                  color: color,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
+      message: 'Chat memory: $pct% used',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: () => ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                '$message\n(${_fmt(promptTokens)} of ${_fmt(contextWindowTokens)} tokens)'),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 5),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              value: ratio == 0 ? 0.001 : ratio,
+              strokeWidth: 3,
+              backgroundColor: cs.surfaceContainerHighest,
+              color: color,
+            ),
           ),
         ),
       ),
